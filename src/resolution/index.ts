@@ -197,6 +197,53 @@ const CPP_BUILT_INS = new Set([
 ]);
 
 /**
+ * The repo an endpoint belongs to, by the working-DB layout convention: repos
+ * are laid out under `<repo>/`, so a node's `file_path` first segment IS its
+ * repo (P2A productionization — cross-repo edge tiering). Returns `undefined`
+ * for an empty path or a root-level file with no segment (e.g. a single-repo
+ * index whose paths aren't `<repo>/`-prefixed), in which case the tier falls
+ * back to `medium` (a repo crossing can't be proven).
+ */
+export function repoOfFilePath(filePath: string | undefined): string | undefined {
+  if (!filePath) return undefined;
+  const seg = filePath.split('/')[0];
+  return seg || undefined;
+}
+
+/** Confidence tier stamped on a resolved edge (see computeEdgeTier). */
+export type EdgeTier = 'high' | 'medium' | 'low';
+
+/**
+ * `resolvedBy` values precise enough to trust regardless of repo — an import
+ * binding, a qualified-name/FQN match, or a framework resolver all pin an exact
+ * target, so they are `high` even across repos.
+ */
+const HIGH_TIER_RESOLVERS: ReadonlySet<ResolvedRef['resolvedBy']> = new Set([
+  'import',
+  'qualified-name',
+  'framework',
+]);
+
+/**
+ * Confidence tier for a resolved edge (P2A Task 2). Everything that is NOT a
+ * high-tier resolver is a name-family match (exact-match, fuzzy, instance-method,
+ * file-path, function-ref) — trustworthy WITHIN a repo (`medium`) but only a
+ * bare-name coincidence-or-shared-concept link ACROSS repos (`low`). Cross-repo
+ * name edges are KEPT and merely marked `low`, never dropped. Structural
+ * `contains` edges are emitted by the extractor and never flow through
+ * `createEdges`, so they stay untiered (always parent→child in one file).
+ */
+export function computeEdgeTier(
+  resolvedBy: ResolvedRef['resolvedBy'],
+  sourceRepo: string | undefined,
+  targetRepo: string | undefined,
+): EdgeTier {
+  if (HIGH_TIER_RESOLVERS.has(resolvedBy)) return 'high';
+  if (sourceRepo && targetRepo && sourceRepo !== targetRepo) return 'low';
+  return 'medium';
+}
+
+/**
  * Reference Resolver
  *
  * Orchestrates reference resolution using multiple strategies.
@@ -1097,6 +1144,12 @@ export class ReferenceResolver {
         }
       }
 
+      // Source repo (P2A tiering): the from-symbol's `<repo>/` prefix. Prefer
+      // the ref's denormalized filePath; fall back to the node when it's absent.
+      const sourceRepo = repoOfFilePath(
+        ref.original.filePath || this.queries.getNodeById(ref.original.fromNodeId)?.filePath,
+      );
+
       // One reference can name several targets — a navigation whose
       // destination is a conditional reaches every arm. Each becomes its own
       // edge, sharing this resolution's kind and confidence.
@@ -1104,7 +1157,12 @@ export class ReferenceResolver {
         { targetNodeId: ref.targetNodeId, metadata: ref.metadata },
         ...(ref.alsoTargets ?? []),
       ];
-      return targets.map((t) => ({
+      return targets.map((t) => {
+        // Target repo + confidence tier (P2A Task 2). Each target has its own
+        // repo, so a fanned-out multi-target ref can carry different tiers.
+        const targetRepo = repoOfFilePath(this.queries.getNodeById(t.targetNodeId)?.filePath);
+        const tier = computeEdgeTier(ref.resolvedBy, sourceRepo, targetRepo);
+        return {
         source: ref.original.fromNodeId,
         target: t.targetNodeId,
         kind,
@@ -1114,6 +1172,12 @@ export class ReferenceResolver {
           ...(t.metadata ?? {}),
           confidence: ref.confidence,
           resolvedBy: ref.resolvedBy,
+          // Source/target repo + confidence tier (P2A cross-repo tiering).
+          // `high` = import/qualified-name/framework; `medium` = same-repo name
+          // match; `low` = cross-repo name match (KEPT, just trusted least).
+          tier,
+          ...(sourceRepo ? { sourceRepo } : {}),
+          ...(targetRepo ? { targetRepo } : {}),
           // The ORIGINAL reference text (and kind, when edge-kind promotion
           // rewrote it — calls→instantiates, extends→implements,
           // function_ref→references). If this edge's target is later removed
@@ -1132,7 +1196,8 @@ export class ReferenceResolver {
           // exactly the edges this feature added.
           ...(ref.original.referenceKind === 'function_ref' ? { fnRef: true } : {}),
         },
-      }));
+        };
+      });
     });
   }
 
