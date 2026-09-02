@@ -622,7 +622,7 @@ async function recordIndexTelemetry(
  */
 async function runInit(
   projectPath: string,
-  options: { index?: boolean; force?: boolean; verbose?: boolean; yes?: boolean },
+  options: { index?: boolean; force?: boolean; verbose?: boolean; yes?: boolean; extractOnly?: boolean },
 ): Promise<void> {
   const clack = await importESM('@clack/prompts');
 
@@ -669,11 +669,11 @@ async function runInit(
       const supervision = installCommandSupervision('init', { progressPaths: [dbPath, `${dbPath}-wal`] });
       try {
         if (options.verbose) {
-          return await cg.indexAll({ onProgress: createVerboseProgress(), verbose: true });
+          return await cg.indexAll({ onProgress: createVerboseProgress(), verbose: true, extractOnly: options.extractOnly });
         }
         process.stdout.write(`${colors.dim}${getGlyphs().rail}${colors.reset}\n`);
         const progress = createShimmerProgress();
-        const r = await cg.indexAll({ onProgress: progress.onProgress });
+        const r = await cg.indexAll({ onProgress: progress.onProgress, extractOnly: options.extractOnly });
         await progress.stop();
         return r;
       } finally {
@@ -716,7 +716,8 @@ program
   .option('-f, --force', 'Initialize even if the path looks like your home directory or a filesystem root')
   .option('-v, --verbose', 'Show detailed worker lifecycle and memory info')
   .option('-y, --yes', 'Non-interactive: skip every prompt and take the defaults (for scripts / CI / container bootstraps)')
-  .action(async (pathArg: string | undefined, options: { index?: boolean; force?: boolean; verbose?: boolean; yes?: boolean }) => {
+  .option('--extract-only', 'Extract nodes + unresolved refs + `contains` edges only; skip reference resolution (for per-repo extraction to merge + resolve later). Also settable via CODEGRAPH_EXTRACT_ONLY=1.')
+  .action(async (pathArg: string | undefined, options: { index?: boolean; force?: boolean; verbose?: boolean; yes?: boolean; extractOnly?: boolean }) => {
     await runInit(path.resolve(pathArg || process.cwd()), options);
   });
 
@@ -790,7 +791,8 @@ program
   .option('-f, --force', 'Index even if the path looks like your home directory or a filesystem root')
   .option('-q, --quiet', 'Suppress progress output')
   .option('-v, --verbose', 'Show detailed worker lifecycle and memory info')
-  .action(async (pathArg: string | undefined, options: { force?: boolean; quiet?: boolean; verbose?: boolean }) => {
+  .option('--extract-only', 'Extract nodes + unresolved refs + `contains` edges only; skip reference resolution (for per-repo extraction to merge + resolve later). Also settable via CODEGRAPH_EXTRACT_ONLY=1.')
+  .action(async (pathArg: string | undefined, options: { force?: boolean; quiet?: boolean; verbose?: boolean; extractOnly?: boolean }) => {
     const projectPath = resolveProjectPath(pathArg);
 
     try {
@@ -829,7 +831,7 @@ program
       try {
         if (options.quiet) {
           // Quiet mode: no UI, just run against the freshly-recreated graph.
-          const result = await cg.indexAll();
+          const result = await cg.indexAll({ extractOnly: options.extractOnly });
           if (!result.success) process.exit(1);
           cg.destroy();
           return;
@@ -842,11 +844,11 @@ program
         // renders identically. Supervision already wraps the whole command.
         const renderIndex = async (): Promise<IndexResult> => {
           if (options.verbose) {
-            return await cg.indexAll({ onProgress: createVerboseProgress(), verbose: true });
+            return await cg.indexAll({ onProgress: createVerboseProgress(), verbose: true, extractOnly: options.extractOnly });
           }
           process.stdout.write(`${colors.dim}${getGlyphs().rail}${colors.reset}\n`);
           const progress = createShimmerProgress();
-          const r = await cg.indexAll({ onProgress: progress.onProgress });
+          const r = await cg.indexAll({ onProgress: progress.onProgress, extractOnly: options.extractOnly });
           await progress.stop();
           return r;
         };

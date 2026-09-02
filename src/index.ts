@@ -132,6 +132,16 @@ export interface IndexOptions {
   verbose?: boolean;
   /** Watcher fast path: reconcile ONLY these project-relative paths (see ExtractionOrchestrator.sync). */
   paths?: string[];
+  /**
+   * Extract-only: stop after extraction. Nodes, `unresolved_refs`, and the
+   * structural `contains` edges are written, but the reference-resolution pass
+   * (which turns pending refs into `calls`/`references`/`imports`/… edges) is
+   * SKIPPED. Lets per-repo node DBs be extracted separately and merged +
+   * resolved together later by the stock resolver. Defaults to false (falls
+   * back to the CODEGRAPH_EXTRACT_ONLY=1 env var when the option is omitted),
+   * so normal indexing is unchanged.
+   */
+  extractOnly?: boolean;
 }
 
 /**
@@ -582,8 +592,14 @@ export class CodeGraph {
           if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] resolver-reinit: ${Date.now() - tReinit}ms`);
         }
 
-        // Resolve references to create call/import/extends edges
-        if (result.success && result.filesIndexed > 0) {
+        // Resolve references to create call/import/extends edges.
+        // Extract-only (the `extractOnly` option, or CODEGRAPH_EXTRACT_ONLY=1
+        // when the option is omitted) stops here, leaving nodes +
+        // unresolved_refs + structural `contains` edges in the DB and skipping
+        // the resolution pass. Lets per-repo node DBs be merged and resolved
+        // together by the stock resolver. Default false — upstream unchanged.
+        const extractOnly = options.extractOnly ?? process.env.CODEGRAPH_EXTRACT_ONLY === '1';
+        if (result.success && result.filesIndexed > 0 && !extractOnly) {
           // Get count without loading all refs into memory
           const unresolvedCount = this.queries.getUnresolvedReferencesCount();
 
