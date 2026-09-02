@@ -17,8 +17,11 @@
  *     set, so the SQL / traversal never expands out of scope in the first place.
  *   - Every other node/edge/file/source-returning method the tools use is
  *     filtered in memory here (`getNode`, `getNodesInFile`, `getChildren`,
- *     out/incoming edges, `getFile(s)`, `getFileDependents/Dependencies`,
- *     `getCode`, `findRelevantContext`, name-prefix/substring/kind lookups).
+ *     out/incoming edges and their batch forms `getNodesByIds` /
+ *     `getOutgoingEdgesFrom` / `getIncomingEdgesTo` — the type-hierarchy walk
+ *     behind `codegraph_explore` — `getFile(s)`,
+ *     `getFileDependents/Dependencies`, `getCode`, `findRelevantContext`,
+ *     name-prefix/substring/kind lookups).
  *   - An out-of-scope node id resolves to `null` (`getNode`) and an out-of-scope
  *     file yields no nodes/source, so an edge crossing the boundary can never
  *     surface the far side's data — the far endpoint simply isn't there.
@@ -107,6 +110,23 @@ export function createScopedCodeGraph(inner: CodeGraph, repos: readonly string[]
       inner.getOutgoingEdges(nodeId).filter(edgeInScope)) as never,
     getIncomingEdges: ((nodeId: string): Edge[] =>
       inner.getIncomingEdges(nodeId).filter(edgeInScope)) as never,
+
+    // Batch forms of the single-node edge/node accessors. These are reached by
+    // the type-hierarchy walk (`getNodesByIds` / `getOutgoingEdgesFrom` /
+    // `getIncomingEdgesTo`) that `codegraph_explore` runs through
+    // `countImplementers` — without these overrides they forwarded UNSCOPED and
+    // an in-scope type's implementer count / hierarchy leaked out-of-scope
+    // repos. Same rules as their single-node siblings above: an edge survives
+    // only when BOTH endpoints are in scope; an out-of-scope node is dropped.
+    getNodesByIds: ((ids: readonly string[]): Map<string, Node> => {
+      const scoped = new Map<string, Node>();
+      for (const [id, n] of inner.getNodesByIds(ids)) if (nodeInScope(n)) scoped.set(id, n);
+      return scoped;
+    }) as never,
+    getOutgoingEdgesFrom: ((nodeIds: readonly string[], kinds?: Edge['kind'][]): Edge[] =>
+      inner.getOutgoingEdgesFrom(nodeIds, kinds).filter(edgeInScope)) as never,
+    getIncomingEdgesTo: ((nodeIds: readonly string[], kinds?: Edge['kind'][]): Edge[] =>
+      inner.getIncomingEdgesTo(nodeIds, kinds).filter(edgeInScope)) as never,
     getFile: ((filePath: string): FileRecord | null =>
       pathInScope(filePath) ? inner.getFile(filePath) : null) as never,
     getFiles: ((): FileRecord[] => inner.getFiles().filter((f) => pathInScope(f.path))) as never,
