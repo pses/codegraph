@@ -1309,6 +1309,67 @@ export class CodeGraph {
   }
 
   /**
+   * Run reference resolution over an ALREADY-EXTRACTED database — the
+   * counterpart to `--extract-only` (surfaced on the CLI as `codegraph
+   * resolve <dir>`).
+   *
+   * `indexAll({ extractOnly: true })` stops after the extraction pass, leaving
+   * nodes + `unresolved_refs` + structural `contains` edges but NO
+   * resolution-produced (`calls`/`references`/…) edges. This method takes that
+   * DB and runs ONLY the resolution stage indexAll would have run next — no
+   * extraction, no file scan. It exists so a caller can extract per-repo node
+   * DBs separately, merge them into one working dir, then resolve edges over
+   * the merged graph.
+   *
+   * It mirrors the resolution block of `indexAll` exactly so the result is
+   * identical to a full index:
+   *   1. Re-initialize the resolver and run its post-extract finalization, so
+   *      framework resolvers detect against the actual indexed files and any
+   *      cross-file name rewrites land BEFORE resolution reads them.
+   *   2. `resolveReferencesBatched` — the main pass that drains
+   *      `unresolved_refs` into edges.
+   *   3. `resolveChainedCallsViaConformance` — chained calls whose method lives
+   *      on a conformed-to supertype (needs the implements/extends edges the
+   *      main pass just built).
+   *   4. `resolveDeferredThisMemberRefs` — `this.<member>` callbacks inherited
+   *      from a supertype (same post-resolution lifecycle).
+   * then refreshes planner stats + checkpoints the WAL via `runMaintenance`.
+   *
+   * Equivalence guarantee: `extract-only` + `resolveExtracted` produces the
+   * same edges as a normal (full) `init`/`index` of the same dir.
+   */
+  async resolveExtracted(
+    options: { onProgress?: (progress: IndexProgress) => void; verbose?: boolean } = {},
+  ): Promise<ResolutionResult> {
+    // Framework resolvers whose detect() consults the indexed file list only
+    // see files that exist at initialize() time. On a freshly-opened DB the
+    // resolver was constructed in the ctor (createResolver) before this method
+    // ran, so re-initialize it now that the extracted graph is on disk, then
+    // run the same cross-file finalization indexAll does before resolution.
+    this.resolver.initialize();
+    this.resolver.runPostExtract();
+
+    const unresolvedCount = this.queries.getUnresolvedReferencesCount();
+    options.onProgress?.({ phase: 'resolving', current: 0, total: unresolvedCount });
+
+    // Main resolution pass — turns pending refs into edges.
+    const result = await this.resolveReferencesBatched(
+      (current, total) => options.onProgress?.({ phase: 'resolving', current, total }),
+      (done, totalPasses) => options.onProgress?.({ phase: 'linking', current: done, total: totalPasses }),
+    );
+
+    // Post-resolution passes (same order + rationale as indexAll): both need
+    // the implements/extends edges the main pass just built.
+    await this.resolver.resolveChainedCallsViaConformance();
+    await this.resolver.resolveDeferredThisMemberRefs();
+
+    // Refresh planner stats + fold the WAL after the bulk writes.
+    await this.db.runMaintenance();
+
+    return result;
+  }
+
+  /**
    * References extracted but never attempted by a resolution pass. Zero on a
    * healthy index — a completed pass consumes every pending row (resolving it
    * or parking it as failed, #1240). Non-zero at rest means a pass was

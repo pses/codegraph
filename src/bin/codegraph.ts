@@ -881,6 +881,79 @@ program
   });
 
 /**
+ * codegraph resolve [path]
+ *
+ * Reference-resolution-only counterpart to `index --extract-only`: runs
+ * resolution over an ALREADY-EXTRACTED database (nodes + `unresolved_refs` +
+ * structural `contains` edges, but no resolution-produced edges) WITHOUT
+ * re-extracting. Intended for the merge-then-resolve flow: extract per-repo
+ * node DBs separately, merge them into one working dir, then `codegraph
+ * resolve <dir>` to build `calls`/`references`/… edges over the merged graph.
+ *
+ * Equivalence: `index --extract-only` + `resolve` produces the same edges as a
+ * plain `index`/`init` of the same dir.
+ */
+program
+  .command('resolve [path]')
+  .description('Resolve references over an already-extracted DB (no re-extraction) — counterpart to index --extract-only')
+  .option('-q, --quiet', 'Suppress progress output')
+  .option('-v, --verbose', 'Show detailed worker lifecycle and memory info')
+  .action(async (pathArg: string | undefined, options: { quiet?: boolean; verbose?: boolean }) => {
+    const projectPath = resolveProjectPath(pathArg);
+
+    try {
+      if (!isInitialized(projectPath)) {
+        error(`CodeGraph not initialized in ${projectPath}`);
+        info('Run "codegraph init" (or "codegraph index --extract-only") first');
+        process.exit(1);
+      }
+
+      const { default: CodeGraph, getDatabasePath } = await loadCodeGraph();
+      // Open the EXISTING database — never recreate/re-extract. Resolution runs
+      // over whatever nodes + unresolved_refs are already on disk.
+      const cg = await CodeGraph.open(projectPath);
+
+      // Supervise the resolver the same way index does: self-terminate if
+      // orphaned or wedged. The DB + WAL paths let the liveness watchdog tell a
+      // slow store from a true wedge.
+      const dbPath = getDatabasePath(projectPath);
+      const supervision = installCommandSupervision('resolve', { progressPaths: [dbPath, `${dbPath}-wal`] });
+      try {
+        if (options.quiet) {
+          await cg.resolveExtracted();
+          cg.destroy();
+          return;
+        }
+
+        const clack = await importESM('@clack/prompts');
+        clack.intro('Resolving references');
+
+        let result;
+        if (options.verbose) {
+          result = await cg.resolveExtracted({ onProgress: createVerboseProgress(), verbose: true });
+        } else {
+          process.stdout.write(`${colors.dim}${getGlyphs().rail}${colors.reset}\n`);
+          const progress = createShimmerProgress();
+          result = await cg.resolveExtracted({ onProgress: progress.onProgress });
+          await progress.stop();
+        }
+
+        clack.log.success(
+          `Resolved ${result.stats.resolved} of ${result.stats.total} references ` +
+            `(${cg.getPendingReferenceCount()} pending)`
+        );
+        clack.outro('Done');
+        cg.destroy();
+      } finally {
+        supervision.stop();
+      }
+    } catch (err) {
+      error(`Failed to resolve: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+/**
  * codegraph sync [path]
  */
 program
