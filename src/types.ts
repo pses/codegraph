@@ -457,6 +457,15 @@ export interface SearchOptions {
 
   /** Whether search is case-sensitive */
   caseSensitive?: boolean;
+
+  /**
+   * Optional repo-subset scope (P2A productionization, Task 4). When set, a
+   * result survives only if its repo (the `file_path` first segment) is one of
+   * these — the same hard gate the `repo:` query token applies, but injected by
+   * the caller (the scoped MCP session) rather than typed by the agent. Absent
+   * → no gate (upstream behavior). Composes with an in-query `repo:` filter.
+   */
+  repos?: readonly string[];
 }
 
 /**

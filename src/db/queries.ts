@@ -1359,6 +1359,17 @@ export class QueryBuilder {
       }
     }
 
+    // Caller-injected repo-subset scope (P2A Task 4). A HARD gate applied to the
+    // candidate set BEFORE scoring/trim, so scoping never costs recall (an
+    // in-scope hit can't be trimmed out by out-of-scope candidates ahead of it)
+    // and never leaks an out-of-scope repo. Distinct from the in-query `repo:`
+    // gate below (which Task 3 applies post-trim for the agent-typed path); the
+    // two compose. Absent → no gate (upstream behavior).
+    if (options.repos && options.repos.length > 0) {
+      const scopeSet = new Set(options.repos);
+      results = results.filter((r) => repoInScope(r.node.filePath, scopeSet));
+    }
+
     // Apply multi-signal scoring
     if (results.length > 0 && (text || query)) {
       const scoringQuery = text || query;

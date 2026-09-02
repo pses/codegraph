@@ -6,6 +6,7 @@
 
 import type CodeGraph from '../index';
 import type { QueryPool } from './query-pool';
+import { createScopedCodeGraph, parseMcpReposEnv } from './scoped-codegraph';
 import { findNearestCodeGraphRoot } from '../directory';
 // Lazy-load the heavy CodeGraph chain off the MCP startup path — see the same
 // helper in engine.ts. ToolHandler must load to answer tools/list (static
@@ -1343,7 +1344,18 @@ export class ToolHandler {
   // direct/in-process mode (one client, no concurrency to parallelize).
   private queryPool: QueryPool | null = null;
 
-  constructor(private cg: CodeGraph | null) {}
+  /**
+   * The session's repo-set scope (P2A Task 4), or undefined for an unscoped
+   * (all-repos) server. Fixed for the server's lifetime: our per-project layer
+   * starts one MCP per run scoped to that project's repos via
+   * `CODEGRAPH_MCP_REPOS`. Applied at {@link getCodeGraph} so EVERY tool queries
+   * a scoped view — see {@link createScopedCodeGraph}. Tests may inject it.
+   */
+  private readonly sessionRepos: readonly string[] | undefined;
+
+  constructor(private cg: CodeGraph | null, sessionRepos?: readonly string[]) {
+    this.sessionRepos = sessionRepos ?? parseMcpReposEnv(process.env.CODEGRAPH_MCP_REPOS);
+  }
 
   /**
    * Engine-only: attach (or detach with null) the worker-thread query pool. The
@@ -1546,7 +1558,22 @@ export class ToolHandler {
   }
 
   /**
-   * Get CodeGraph instance for a project
+   * The CodeGraph a tool handler queries. When the session carries a repo-set
+   * scope (P2A Task 4), the resolved instance is wrapped in a scoped view so
+   * every node/edge/file/source result is restricted to the in-scope repos —
+   * the single enforcement choke point, applied to the default project and to
+   * any cross-project `projectPath` alike. Unscoped sessions get the raw
+   * instance (upstream behavior, byte-identical).
+   */
+  private getCodeGraph(projectPath?: string): CodeGraph {
+    const cg = this.getCodeGraphUnscoped(projectPath);
+    return this.sessionRepos && this.sessionRepos.length > 0
+      ? createScopedCodeGraph(cg, this.sessionRepos)
+      : cg;
+  }
+
+  /**
+   * Resolve the raw (unscoped) CodeGraph instance for a project.
    *
    * If projectPath is provided, opens that project's CodeGraph (cached).
    * Otherwise returns the default CodeGraph instance.
@@ -1554,7 +1581,7 @@ export class ToolHandler {
    * Walks up parent directories to find the nearest .codegraph/ folder,
    * similar to how git finds .git/ directories.
    */
-  private getCodeGraph(projectPath?: string): CodeGraph {
+  private getCodeGraphUnscoped(projectPath?: string): CodeGraph {
     if (!projectPath) {
       if (!this.cg) {
         const searched = this.defaultProjectHint ?? process.cwd();
