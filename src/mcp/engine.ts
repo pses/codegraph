@@ -46,6 +46,23 @@ export interface MCPEngineOptions {
    * disables it even in daemon mode.
    */
   queryPool?: boolean;
+  /**
+   * Frozen serve: open the indexed DB exactly as it is on disk and serve it —
+   * no startup catch-up reconcile ({@link catchUpSync}) and no live watcher.
+   *
+   * The catch-up sync reconciles the graph against the on-disk sources, which
+   * is right for a working tree but WRONG for a pre-built, merged/resolved edge
+   * DB whose project dir has no real sources (only best-effort symlinks): every
+   * indexed file reads as deleted and the DB is pruned to 0 nodes. `--no-watch`
+   * only disables the LIVE watcher, not this startup catch-up — so a separate
+   * switch is needed to serve a static artifact untouched.
+   *
+   * Frozen IMPLIES no watcher (a frozen DB must never mutate), so it also short-
+   * circuits {@link startWatching}. Resolved from this option OR the
+   * `CODEGRAPH_FROZEN=1` env var (the CLI `--frozen` flag routes through the env,
+   * mirroring how `--no-watch` → `CODEGRAPH_NO_WATCH`).
+   */
+  frozen?: boolean;
 }
 
 /**
@@ -74,7 +91,13 @@ export class MCPEngine {
   private queryPool: QueryPool | null = null;
 
   constructor(opts: MCPEngineOptions = {}) {
-    this.opts = { watch: opts.watch ?? true, queryPool: opts.queryPool ?? false };
+    this.opts = {
+      watch: opts.watch ?? true,
+      queryPool: opts.queryPool ?? false,
+      // Explicit opt wins; otherwise honor the env chokepoint the CLI `--frozen`
+      // flag routes through (same shape as `--no-watch` → CODEGRAPH_NO_WATCH).
+      frozen: opts.frozen ?? (process.env.CODEGRAPH_FROZEN === '1'),
+    };
     this.toolHandler = new ToolHandler(null);
   }
 
@@ -276,7 +299,8 @@ export class MCPEngine {
    * keep working.
    */
   private startWatching(): void {
-    if (!this.cg || this.watcherStarted || !this.opts.watch) return;
+    // Frozen serve keeps the DB static — no live watcher, ever.
+    if (!this.cg || this.watcherStarted || !this.opts.watch || this.opts.frozen) return;
 
     const disabledReason = watchDisabledReason(this.projectPath ?? process.cwd());
     if (disabledReason) {
@@ -343,6 +367,16 @@ export class MCPEngine {
   private catchUpSync(): void {
     const cg = this.cg;
     if (!cg) return;
+    // Frozen serve: open the DB as-is and skip the reconcile entirely. For a
+    // pre-built merged edge DB (no real sources on disk, only symlinks) the
+    // catch-up would treat every indexed file as deleted and prune to 0 nodes.
+    // No gate is set, so the first tool call serves immediately.
+    if (this.opts.frozen) {
+      process.stderr.write(
+        '[CodeGraph MCP] Frozen serve (CODEGRAPH_FROZEN / --frozen) — skipping startup catch-up sync; serving the indexed DB as-is.\n'
+      );
+      return;
+    }
     const p = cg
       .sync()
       .then((result) => {

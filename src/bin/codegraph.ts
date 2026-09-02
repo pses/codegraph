@@ -2102,12 +2102,23 @@ program
   .option('-p, --path <path>', 'Project path (optional for MCP mode, uses rootUri from client)')
   .option('--mcp', 'Run as MCP server (stdio transport)')
   .option('--no-watch', 'Disable the file watcher (no auto-sync; useful on slow filesystems like WSL2 /mnt drives)')
-  .action(async (options: { path?: string; mcp?: boolean; watch?: boolean }) => {
+  .option('--frozen', 'Serve the indexed DB exactly as-is: skip the startup catch-up sync AND the live watcher (for a pre-built, merged edge DB whose project dir has no real sources — the catch-up would otherwise prune it to 0 nodes). Implies --no-watch.')
+  .action(async (options: { path?: string; mcp?: boolean; watch?: boolean; frozen?: boolean }) => {
     const projectPath = options.path ? resolveProjectPath(options.path) : undefined;
 
     // Commander sets watch=false when --no-watch is passed. Route it through
     // the same env-var chokepoint the watcher and MCP server already honor.
     if (options.watch === false) {
+      process.env.CODEGRAPH_NO_WATCH = '1';
+    }
+
+    // Frozen serve: skip the startup catch-up reconcile so a static, pre-built
+    // DB is served untouched. Route through the same env chokepoint the engine
+    // reads (mirrors --no-watch → CODEGRAPH_NO_WATCH). Frozen implies no live
+    // watcher too — the engine short-circuits it, and we set NO_WATCH for any
+    // watcher path that only consults the env.
+    if (options.frozen) {
+      process.env.CODEGRAPH_FROZEN = '1';
       process.env.CODEGRAPH_NO_WATCH = '1';
     }
 
