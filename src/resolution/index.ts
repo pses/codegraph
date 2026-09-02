@@ -28,6 +28,7 @@ import { loadWorkspacePackages, type WorkspacePackages } from './workspace-packa
 import { logDebug } from '../errors';
 import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
+import { repoOfFilePath } from '../db/repo-scope';
 
 /** Node kinds that can declare supertypes (extends/implements). */
 const SUPERTYPE_BEARING_KINDS = new Set<Node['kind']>([
@@ -199,16 +200,15 @@ const CPP_BUILT_INS = new Set([
 /**
  * The repo an endpoint belongs to, by the working-DB layout convention: repos
  * are laid out under `<repo>/`, so a node's `file_path` first segment IS its
- * repo (P2A productionization — cross-repo edge tiering). Returns `undefined`
- * for an empty path or a root-level file with no segment (e.g. a single-repo
- * index whose paths aren't `<repo>/`-prefixed), in which case the tier falls
- * back to `medium` (a repo crossing can't be proven).
+ * repo (P2A productionization). Returns `undefined` for an empty path or a
+ * root-level file with no segment, in which case the edge tier falls back to
+ * `medium` (a repo crossing can't be proven).
+ *
+ * Single definition lives in `db/repo-scope` (shared with the repo-subset scope
+ * on name lookup / search / traversal, P2A Task 3); re-exported here so existing
+ * importers of `repoOfFilePath` from the resolution module are unaffected.
  */
-export function repoOfFilePath(filePath: string | undefined): string | undefined {
-  if (!filePath) return undefined;
-  const seg = filePath.split('/')[0];
-  return seg || undefined;
-}
+export { repoOfFilePath };
 
 /** Confidence tier stamped on a resolved edge (see computeEdgeTier). */
 export type EdgeTier = 'high' | 'medium' | 'low';

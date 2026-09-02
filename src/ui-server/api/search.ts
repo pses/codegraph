@@ -183,6 +183,7 @@ export function buildSearch(cg: CodeGraph, query: URLSearchParams): unknown {
       languages: parsed.languages,
       paths: parsed.pathFilters,
       names: parsed.nameFilters,
+      repos: parsed.repoFilters,
     },
     results: wireList(results, scored.length),
     groups,
@@ -222,6 +223,13 @@ function matchesFilters(node: Node, parsed: ParsedQuery): boolean {
     const name = node.name.toLowerCase();
     if (!parsed.nameFilters.some((n) => name.includes(n.toLowerCase()))) return false;
   }
+  // `repo:` is a HARD repo-subset scope (P2A Task 3): the node's repo (the
+  // file_path first segment) must be one of the requested repos. Distinct from
+  // the loose `path:` substring above.
+  if (parsed.repoFilters.length > 0) {
+    const repo = node.filePath.split('/')[0];
+    if (!repo || !parsed.repoFilters.includes(repo)) return false;
+  }
   return true;
 }
 
@@ -230,7 +238,7 @@ function emptySearch(raw: string): unknown {
   return {
     query: raw,
     text: '',
-    filters: { kinds: [], languages: [], paths: [], names: [] },
+    filters: { kinds: [], languages: [], paths: [], names: [], repos: [] },
     results: wireList<WireSearchResult>([], 0),
     groups: [],
   };

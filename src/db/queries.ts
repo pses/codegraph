@@ -22,6 +22,7 @@ import { kindBonus, nameMatchBonus, scorePathRelevance } from '../search/query-u
 import { parseQuery, boundedEditDistance } from '../search/query-parser';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { splitIdentifierSegments } from '../search/identifier-segments';
+import { buildRepoScopeClause, repoInScope } from './repo-scope';
 
 /**
  * Files that should not be candidates for "dominant file" detection: test/spec
@@ -1185,7 +1186,18 @@ export class QueryBuilder {
    * run — ReferenceResolver memoizes this in its nameCache — and the population
    * is capped by AMBIGUOUS_NAME_CEILING (#999).
    */
-  getNodesByName(name: string): Node[] {
+  getNodesByName(name: string, repos?: readonly string[]): Node[] {
+    // Optional repo-subset scope (P2A Task 3): when `repos` is provided, AND a
+    // `file_path`-prefix predicate so name-fallback matches only candidates in
+    // those repos. Absent → the cached global statement (byte-identical to
+    // upstream). The predicate uses bound params, never string interpolation.
+    const scope = buildRepoScopeClause(repos);
+    if (scope) {
+      const sql =
+        `SELECT * FROM nodes WHERE name = ? AND ${scope.sql} ORDER BY file_path, start_line`;
+      const rows = this.db.prepare(sql).all(name, ...scope.params) as NodeRow[];
+      return rows.map(rowToNode);
+    }
     if (!this.stmts.getNodesByName) {
       this.stmts.getNodesByName = this.db.prepare(
         'SELECT * FROM nodes WHERE name = ? ORDER BY file_path, start_line'
@@ -1392,6 +1404,14 @@ export class QueryBuilder {
         const nm = r.node.name.toLowerCase();
         return lowered.some((n) => nm.includes(n));
       });
+    }
+
+    // `repo:` scope (P2A Task 3) — a HARD gate distinct from the loose `path:`
+    // substring: a result survives only if its repo (file_path first segment)
+    // is one of the requested repos. Absent → no gate (upstream behavior).
+    if (parsed.repoFilters.length > 0) {
+      const repoSet = new Set(parsed.repoFilters);
+      results = results.filter((r) => repoInScope(r.node.filePath, repoSet));
     }
 
     return results;

@@ -423,6 +423,14 @@ export interface TraversalOptions {
 
   /** Whether to include the starting node */
   includeStart?: boolean;
+
+  /**
+   * Optional repo-subset scope (P2A Task 3): repo names (a node's `file_path`
+   * first segment). When set, BFS/DFS never expand into a neighbor outside these
+   * repos. Empty/absent → no scope (upstream behavior). The start node is always
+   * kept even if out of scope; only expansion is gated.
+   */
+  repos?: string[];
 }
 
 /**

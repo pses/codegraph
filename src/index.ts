@@ -1595,8 +1595,8 @@ export class CodeGraph {
    * Used to enumerate every overload of a heavily-overloaded name so the specific
    * definition the caller wants is never dropped below a search cut.
    */
-  getNodesByName(name: string): Node[] {
-    return this.queries.getNodesByName(name);
+  getNodesByName(name: string, repos?: readonly string[]): Node[] {
+    return this.queries.getNodesByName(name, repos);
   }
 
   /** Nodes whose name starts with `prefix` (index range scan, capped). */
@@ -1978,8 +1978,8 @@ export class CodeGraph {
    * @param maxDepth - Maximum depth to traverse (default: 1)
    * @returns Array of nodes that call this function
    */
-  getCallers(nodeId: string, maxDepth: number = 1): Array<{ node: Node; edge: Edge }> {
-    return this.traverser.getCallers(nodeId, maxDepth);
+  getCallers(nodeId: string, maxDepth: number = 1, repos?: string[]): Array<{ node: Node; edge: Edge }> {
+    return this.traverser.getCallers(nodeId, maxDepth, repos);
   }
 
   /**
@@ -1989,8 +1989,8 @@ export class CodeGraph {
    * @param maxDepth - Maximum depth to traverse (default: 1)
    * @returns Array of nodes called by this function
    */
-  getCallees(nodeId: string, maxDepth: number = 1): Array<{ node: Node; edge: Edge }> {
-    return this.traverser.getCallees(nodeId, maxDepth);
+  getCallees(nodeId: string, maxDepth: number = 1, repos?: string[]): Array<{ node: Node; edge: Edge }> {
+    return this.traverser.getCallees(nodeId, maxDepth, repos);
   }
 
   /**
@@ -2002,8 +2002,8 @@ export class CodeGraph {
    * @param maxDepth - Maximum depth to traverse (default: 3)
    * @returns Subgraph containing potentially impacted nodes
    */
-  getImpactRadius(nodeId: string, maxDepth: number = 3): Subgraph {
-    return this.traverser.getImpactRadius(nodeId, maxDepth);
+  getImpactRadius(nodeId: string, maxDepth: number = 3, repos?: string[]): Subgraph {
+    return this.traverser.getImpactRadius(nodeId, maxDepth, repos);
   }
 
   /**

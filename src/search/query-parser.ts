@@ -17,6 +17,8 @@
  *   lang:    one of typescript|python|go|...   (alias: language:)
  *   path:    case-insensitive substring of file_path
  *   name:    case-insensitive substring of the symbol's name
+ *   repo:    HARD repo-subset scope (the file_path first segment, `<repo>/…`);
+ *            distinct from the loose `path:` substring
  *
  * Unknown field prefixes (e.g. `foo:bar`) are passed through to FTS
  * as plain text — that's how someone searching for `TODO:` gets a
@@ -42,6 +44,12 @@ export interface ParsedQuery {
   pathFilters: string[];
   /** name: filters (OR'd, case-insensitive substring of node.name). */
   nameFilters: string[];
+  /**
+   * repo: filters (OR'd). A HARD repo-subset scope, distinct from the loose
+   * `path:` substring: a result is kept only if its repo (the `file_path` first
+   * segment, `<repo>/…`) is one of these. Empty when none (P2A Task 3).
+   */
+  repoFilters: string[];
 }
 
 // Derived from the canonical `NODE_KINDS` / `LANGUAGES` arrays in
@@ -70,6 +78,7 @@ export function parseQuery(raw: string): ParsedQuery {
     languages: [],
     pathFilters: [],
     nameFilters: [],
+    repoFilters: [],
   };
 
   // Tokenise on whitespace, preserving quoted spans as part of the
@@ -136,6 +145,9 @@ export function parseQuery(raw: string): ParsedQuery {
         break;
       case 'name':
         out.nameFilters.push(valueRaw);
+        break;
+      case 'repo':
+        out.repoFilters.push(valueRaw);
         break;
       default:
         textParts.push(tok);

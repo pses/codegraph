@@ -6,6 +6,16 @@
 
 import { Node, Edge, Subgraph, TraversalOptions, EdgeKind } from '../types';
 import { QueryBuilder } from '../db/queries';
+import { repoInScope } from '../db/repo-scope';
+
+/**
+ * Normalize an optional repo-subset scope (P2A Task 3) to a Set, or `null` when
+ * absent/empty (no scope → upstream behavior). A neighbor node is admitted only
+ * when its repo is in the set; see `repoInScope`.
+ */
+function toRepoScope(repos: readonly string[] | undefined): ReadonlySet<string> | null {
+  return repos && repos.length > 0 ? new Set(repos) : null;
+}
 
 /**
  * Default traversal options
@@ -17,6 +27,7 @@ const DEFAULT_OPTIONS: Required<TraversalOptions> = {
   direction: 'outgoing',
   limit: 1000,
   includeStart: true,
+  repos: [],
 };
 
 /**
@@ -47,6 +58,7 @@ export class GraphTraverser {
    */
   traverseBFS(startId: string, options: TraversalOptions = {}): Subgraph {
     const opts = { ...DEFAULT_OPTIONS, ...options };
+    const repoScope = toRepoScope(opts.repos);
     const startNode = this.queries.getNodeById(startId);
 
     if (!startNode) {
@@ -111,6 +123,12 @@ export class GraphTraverser {
         const nextNode = neighborNodes.get(nextNodeId) ?? nodes.get(nextNodeId);
         if (!nextNode) continue;
 
+        // Repo-subset scope (P2A Task 3): never cross into an out-of-scope repo.
+        // Drop the neighbor AND its edge so the result stays within the scope.
+        if (repoScope && !repoInScope(nextNode.filePath, repoScope)) {
+          continue;
+        }
+
         if (opts.nodeKinds && opts.nodeKinds.length > 0 && !opts.nodeKinds.includes(nextNode.kind)) {
           continue;
         }
@@ -153,6 +171,7 @@ export class GraphTraverser {
    */
   traverseDFS(startId: string, options: TraversalOptions = {}): Subgraph {
     const opts = { ...DEFAULT_OPTIONS, ...options };
+    const repoScope = toRepoScope(opts.repos);
     const startNode = this.queries.getNodeById(startId);
 
     if (!startNode) {
@@ -167,7 +186,7 @@ export class GraphTraverser {
       nodes.set(startNode.id, startNode);
     }
 
-    this.dfsRecursive(startNode, 0, opts, nodes, edges, visited);
+    this.dfsRecursive(startNode, 0, opts, nodes, edges, visited, repoScope);
 
     return {
       nodes,
@@ -185,7 +204,8 @@ export class GraphTraverser {
     opts: Required<TraversalOptions>,
     nodes: Map<string, Node>,
     edges: Edge[],
-    visited: Set<string>
+    visited: Set<string>,
+    repoScope: ReadonlySet<string> | null
   ): void {
     if (visited.has(node.id) || nodes.size >= opts.limit || depth >= opts.maxDepth) {
       return;
@@ -215,6 +235,11 @@ export class GraphTraverser {
       const nextNode = neighborNodes.get(nextNodeId);
       if (!nextNode) continue;
 
+      // Repo-subset scope (P2A Task 3): never cross into an out-of-scope repo.
+      if (repoScope && !repoInScope(nextNode.filePath, repoScope)) {
+        continue;
+      }
+
       // Apply node kind filter
       if (opts.nodeKinds && opts.nodeKinds.length > 0 && !opts.nodeKinds.includes(nextNode.kind)) {
         continue;
@@ -225,7 +250,7 @@ export class GraphTraverser {
       edges.push(edge);
 
       // Recurse
-      this.dfsRecursive(nextNode, depth + 1, opts, nodes, edges, visited);
+      this.dfsRecursive(nextNode, depth + 1, opts, nodes, edges, visited, repoScope);
     }
   }
 
@@ -258,11 +283,11 @@ export class GraphTraverser {
    * @param maxDepth - Maximum depth to traverse (default: 1)
    * @returns Array of nodes that call this function
    */
-  getCallers(nodeId: string, maxDepth: number = 1): Array<{ node: Node; edge: Edge }> {
+  getCallers(nodeId: string, maxDepth: number = 1, repos?: string[]): Array<{ node: Node; edge: Edge }> {
     const result: Array<{ node: Node; edge: Edge }> = [];
     const visited = new Set<string>();
 
-    this.getCallersRecursive(nodeId, maxDepth, 0, result, visited);
+    this.getCallersRecursive(nodeId, maxDepth, 0, result, visited, toRepoScope(repos));
 
     return result;
   }
@@ -272,7 +297,8 @@ export class GraphTraverser {
     maxDepth: number,
     currentDepth: number,
     result: Array<{ node: Node; edge: Edge }>,
-    visited: Set<string>
+    visited: Set<string>,
+    repoScope: ReadonlySet<string> | null
   ): void {
     // Mark visited BEFORE the depth check, not after. Folding both into one
     // guard meant that when `currentDepth >= maxDepth` fired we returned without
@@ -302,9 +328,11 @@ export class GraphTraverser {
 
     for (const edge of incomingEdges) {
       const callerNode = callerNodes.get(edge.source);
+      // Repo-subset scope (P2A Task 3): never surface an out-of-scope caller.
+      if (repoScope && callerNode && !repoInScope(callerNode.filePath, repoScope)) continue;
       if (callerNode && !visited.has(callerNode.id)) {
         result.push({ node: callerNode, edge });
-        this.getCallersRecursive(callerNode.id, maxDepth, currentDepth + 1, result, visited);
+        this.getCallersRecursive(callerNode.id, maxDepth, currentDepth + 1, result, visited, repoScope);
       }
     }
   }
@@ -316,11 +344,11 @@ export class GraphTraverser {
    * @param maxDepth - Maximum depth to traverse (default: 1)
    * @returns Array of nodes called by this function
    */
-  getCallees(nodeId: string, maxDepth: number = 1): Array<{ node: Node; edge: Edge }> {
+  getCallees(nodeId: string, maxDepth: number = 1, repos?: string[]): Array<{ node: Node; edge: Edge }> {
     const result: Array<{ node: Node; edge: Edge }> = [];
     const visited = new Set<string>();
 
-    this.getCalleesRecursive(nodeId, maxDepth, 0, result, visited);
+    this.getCalleesRecursive(nodeId, maxDepth, 0, result, visited, toRepoScope(repos));
 
     return result;
   }
@@ -330,7 +358,8 @@ export class GraphTraverser {
     maxDepth: number,
     currentDepth: number,
     result: Array<{ node: Node; edge: Edge }>,
-    visited: Set<string>
+    visited: Set<string>,
+    repoScope: ReadonlySet<string> | null
   ): void {
     // Mark visited before the depth check — see getCallersRecursive: the merged
     // guard dropped the `visited.add` at the depth boundary, duplicating a
@@ -356,9 +385,11 @@ export class GraphTraverser {
 
     for (const edge of outgoingEdges) {
       const calleeNode = calleeNodes.get(edge.target);
+      // Repo-subset scope (P2A Task 3): never surface an out-of-scope callee.
+      if (repoScope && calleeNode && !repoInScope(calleeNode.filePath, repoScope)) continue;
       if (calleeNode && !visited.has(calleeNode.id)) {
         result.push({ node: calleeNode, edge });
-        this.getCalleesRecursive(calleeNode.id, maxDepth, currentDepth + 1, result, visited);
+        this.getCalleesRecursive(calleeNode.id, maxDepth, currentDepth + 1, result, visited, repoScope);
       }
     }
   }
@@ -517,7 +548,7 @@ export class GraphTraverser {
    * @param maxDepth - Maximum depth to traverse (default: 3)
    * @returns Subgraph containing potentially impacted nodes
    */
-  getImpactRadius(nodeId: string, maxDepth: number = 3): Subgraph {
+  getImpactRadius(nodeId: string, maxDepth: number = 3, repos?: string[]): Subgraph {
     const focalNode = this.queries.getNodeById(nodeId);
     if (!focalNode) {
       return { nodes: new Map(), edges: [], roots: [] };
@@ -531,7 +562,7 @@ export class GraphTraverser {
     nodes.set(focalNode.id, focalNode);
 
     // Traverse incoming edges to find all dependents
-    this.getImpactRecursive(nodeId, maxDepth, 0, nodes, edges, visited);
+    this.getImpactRecursive(nodeId, maxDepth, 0, nodes, edges, visited, toRepoScope(repos));
 
     return {
       nodes,
@@ -546,7 +577,8 @@ export class GraphTraverser {
     currentDepth: number,
     nodes: Map<string, Node>,
     edges: Edge[],
-    visited: Set<string>
+    visited: Set<string>,
+    repoScope: ReadonlySet<string> | null
   ): void {
     // Mark visited before the depth check so a node collected at the depth
     // boundary still lands in `visited`. Otherwise it could sit in `nodes` but
@@ -571,11 +603,13 @@ export class GraphTraverser {
           const children = this.queries.getNodesByIds(containsEdges.map((e) => e.target));
           for (const edge of containsEdges) {
             const childNode = children.get(edge.target);
+            // Repo-subset scope (P2A Task 3): stay within the scoped repos.
+            if (repoScope && childNode && !repoInScope(childNode.filePath, repoScope)) continue;
             if (childNode && !visited.has(childNode.id)) {
               nodes.set(childNode.id, childNode);
               edges.push(edge);
               // Recurse into children at the same depth (they're part of the same symbol)
-              this.getImpactRecursive(childNode.id, maxDepth, currentDepth, nodes, edges, visited);
+              this.getImpactRecursive(childNode.id, maxDepth, currentDepth, nodes, edges, visited, repoScope);
             }
           }
         }
@@ -593,6 +627,9 @@ export class GraphTraverser {
     for (const edge of incomingEdges) {
       const sourceNode = sources.get(edge.source);
       if (!sourceNode) continue;
+      // Repo-subset scope (P2A Task 3): an out-of-scope dependent (and the edge
+      // reaching it) is never recorded, so impact stays within the scoped repos.
+      if (repoScope && !repoInScope(sourceNode.filePath, repoScope)) continue;
       // Record the dependency edge unconditionally. The gate used to also gate
       // edge collection (`!nodes.has(...)`), so a second incoming edge into a
       // node already collected via another path was silently dropped from
@@ -601,7 +638,7 @@ export class GraphTraverser {
       edges.push(edge);
       if (!visited.has(sourceNode.id)) {
         nodes.set(sourceNode.id, sourceNode);
-        this.getImpactRecursive(sourceNode.id, maxDepth, currentDepth + 1, nodes, edges, visited);
+        this.getImpactRecursive(sourceNode.id, maxDepth, currentDepth + 1, nodes, edges, visited, repoScope);
       }
     }
   }
