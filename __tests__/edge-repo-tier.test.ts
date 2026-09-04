@@ -89,7 +89,7 @@ describe('cross-repo edge tiering', () => {
     // (a) cross-repo IMPORT edge (makeWidget -> Widget, resolvedBy import): tier high.
     const importEdge = edgeBetween(cg, 'makeWidget', 'Widget');
     expect(importEdge).toBeDefined();
-    const importMd = importEdge!.metadata as { tier?: string; resolvedBy?: string; sourceRepo?: string; targetRepo?: string };
+    const importMd = importEdge!.metadata as { tier?: string; edgeTier?: string; resolvedBy?: string; sourceRepo?: string; targetRepo?: string };
     expect(importMd.resolvedBy).toBe('import');
     expect(importMd.tier).toBe('high');
     expect(importMd.sourceRepo).toBe('repo-a');
@@ -99,7 +99,7 @@ describe('cross-repo edge tiering', () => {
     // PRESENT (not dropped) and tier low.
     const crossNameEdge = edgeBetween(cg, 'inspect', 'DbxFolderInfo');
     expect(crossNameEdge).toBeDefined(); // KEPT — cross-repo name match is not dropped
-    const crossMd = crossNameEdge!.metadata as { tier?: string; resolvedBy?: string; sourceRepo?: string; targetRepo?: string };
+    const crossMd = crossNameEdge!.metadata as { tier?: string; edgeTier?: string; resolvedBy?: string; sourceRepo?: string; targetRepo?: string };
     expect(crossMd.resolvedBy).toBe('exact-match');
     expect(crossMd.tier).toBe('low');
     expect(crossMd.sourceRepo).toBe('repo-a');
@@ -108,12 +108,23 @@ describe('cross-repo edge tiering', () => {
     // (c) same-repo NAME edge (useHelper -> Helper, exact-match, both repo-a): tier medium.
     const sameRepoEdge = edgeBetween(cg, 'useHelper', 'Helper');
     expect(sameRepoEdge).toBeDefined();
-    const sameMd = sameRepoEdge!.metadata as { tier?: string; resolvedBy?: string; sourceRepo?: string; targetRepo?: string };
+    const sameMd = sameRepoEdge!.metadata as { tier?: string; edgeTier?: string; resolvedBy?: string; sourceRepo?: string; targetRepo?: string };
     expect(sameMd.tier).toBe('medium');
     expect(sameMd.sourceRepo).toBe('repo-a');
     expect(sameMd.targetRepo).toBe('repo-a');
 
     // Both cross-repo edges coexist — tiering annotates, never filters.
     expect(importEdge!.target).not.toBe(crossNameEdge!.target);
+
+    // P2C: the same confidence is also stamped under `edgeTier`, the key that
+    // NEVER means anything else. `tier` is overloaded across the graph — on a
+    // cross-tier synthesized edge (tier-synthesizer.ts) it is a DIRECTION,
+    // `client→server`, which `src/context`, `src/mcp/tools` and the Steps view
+    // all read by that name. A consumer filtering the whole edge set by
+    // confidence therefore has to read `edgeTier`; `tier` stays untouched so
+    // the fork's own readers are unaffected.
+    expect(importMd.edgeTier).toBe('high');
+    expect(crossMd.edgeTier).toBe('low');
+    expect(sameMd.edgeTier).toBe('medium');
   });
 });

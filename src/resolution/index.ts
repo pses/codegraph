@@ -1176,6 +1176,18 @@ export class ReferenceResolver {
           // `high` = import/qualified-name/framework; `medium` = same-repo name
           // match; `low` = cross-repo name match (KEPT, just trusted least).
           tier,
+          // The SAME value under an unambiguous key (P2C). `metadata.tier` is
+          // overloaded across the graph: on a resolved edge it is the
+          // confidence above, but on a cross-tier synthesized edge
+          // (tier-synthesizer.ts) it is a DIRECTION — `client→server` /
+          // `server→client` — which `src/context`, `src/mcp/tools` and the
+          // Steps view all read by that name. A consumer that wants to filter
+          // the whole edge set by CONFIDENCE therefore cannot use `tier`: the
+          // two meanings share the key. `edgeTier` never means anything but
+          // confidence, on every edge that carries one, so it is the key to
+          // filter on. `tier` is left exactly as it was — the fork's own
+          // readers keep working, and this is purely additive.
+          edgeTier: tier,
           ...(sourceRepo ? { sourceRepo } : {}),
           ...(targetRepo ? { targetRepo } : {}),
           // The ORIGINAL reference text (and kind, when edge-kind promotion
