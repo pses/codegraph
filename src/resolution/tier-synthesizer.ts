@@ -19,6 +19,13 @@
  *     (`${API_URL}/users`) matches a route by its tail; a variable url, a path
  *     no route serves, or a path two routes serve alike produce nothing.
  *     Edge: enclosing function → route, `tier: 'client→server'`.
+ *     The client may be a `.vue` / `.svelte` / `.astro` single-file component
+ *     as well as a `.[jt]sx?` module. Each such edge also carries the repo of
+ *     each end (`sourceRepo` / `targetRepo` / `crossRepo`) and a CONFIDENCE
+ *     under `edgeTier` — never `high`, `medium` for a whole-path match, `low`
+ *     when only the tail matched behind a base URL. Client and server in
+ *     DIFFERENT repos is the shape this channel exists to find, so crossing a
+ *     repo does not lower the confidence; see the emission site below.
  *  2. **`queue-job`** — `queue.add('job', …)` where the queue is named (`new
  *     Queue('email')`, `@InjectQueue('email')`) → the `@Process('job')` method
  *     of the `@Processor('email')` class, a WorkerHost's `process`, a
@@ -49,8 +56,24 @@ import { isGeneratedFile } from '../extraction/generated-detection';
 import { isTestPath } from '../search/query-utils';
 import { HOLE, readStringAt } from './frameworks/expo-router';
 import { enclosingFn, enclosingValue, makeLineAt } from './synth-utils';
+import { repoOfFilePath } from '../db/repo-scope';
 
 const JS_FILE = /\.(?:[cm]?[jt]sx?)$/;
+
+/**
+ * Single-file components, scanned for the HTTP channel ONLY (P2C).
+ *
+ * A `.vue` / `.svelte` / `.astro` file is where a large share of a real
+ * frontend's `axios.get('/api/…')` lives, and the loop below only ever looked
+ * at `.[jt]sx?` — so a Vue or Svelte client produced no client→server edge at
+ * all. Reading these files for the HTTP channel closes that; the queue and
+ * event channels stay off for them on purpose. Those two read decorators,
+ * `new Worker(…)` and `.on(…)` bindings whose shapes are not what an SFC's
+ * `<template>` contains, and widening them here would change edges on graphs
+ * that have no HTTP in them at all — which is exactly the regression this pass
+ * must not introduce.
+ */
+const SFC_FILE = /\.(?:vue|svelte|astro)$/;
 
 /** Events with more handlers or dispatchers than this are too generic to pair without type information. */
 const EVENT_FANOUT_CAP = 6;
@@ -891,13 +914,16 @@ export async function crossTierEdges(ctx: ResolutionContext, onYield: MaybeYield
 
   let scanned = 0;
   for (const file of ctx.getAllFiles()) {
-    if (!JS_FILE.test(file) || isTestPath(file) || isGeneratedFile(file)) continue;
+    const isJs = JS_FILE.test(file);
+    // An SFC is read for the HTTP channel only — see SFC_FILE.
+    const isSfc = !isJs && SFC_FILE.test(file);
+    if ((!isJs && !isSfc) || isTestPath(file) || isGeneratedFile(file)) continue;
     if ((++scanned & 63) === 0) await onYield();
     const content = ctx.readFile(file);
     if (!content) continue;
     const wantsHttp = routes.length > 0 && HTTP_GATE.test(content);
-    const wantsQueue = QUEUE_GATE.test(content);
-    const wantsEvents = EVENT_GATE.test(content);
+    const wantsQueue = isJs && QUEUE_GATE.test(content);
+    const wantsEvents = isJs && EVENT_GATE.test(content);
     if (!wantsHttp && !wantsQueue && !wantsEvents) continue;
     let facts = cache.get(file);
     if (facts === undefined) {
@@ -918,6 +944,12 @@ export async function crossTierEdges(ctx: ResolutionContext, onYield: MaybeYield
     const key = `${site.fn.id}>${route.node.id}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    // Repo stamps + confidence tier (P2C). A merged multi-repo graph lays each
+    // repo out under `<repo>/`, so a node's `file_path` first segment IS its
+    // repo — the same derivation `db/repo-scope` scopes queries by, which is
+    // what keeps this edge filterable at the MCP boundary.
+    const sourceRepo = repoOfFilePath(site.fn.filePath);
+    const targetRepo = repoOfFilePath(route.node.filePath);
     edges.push({
       source: site.fn.id,
       target: route.node.id,
@@ -933,6 +965,33 @@ export async function crossTierEdges(ctx: ResolutionContext, onYield: MaybeYield
         method: site.method,
         href: site.display,
         registeredAt: `${route.node.filePath}:${route.node.startLine}`,
+        // Confidence, under the key that only ever means confidence (see the
+        // `edgeTier` note in resolution/index.ts — this edge's `tier` above is
+        // a DIRECTION, so it cannot also carry this).
+        //
+        // Never `high`. `high` is reserved for a resolver that PINS a declared
+        // target through a binding — an import, an FQN, a framework registry.
+        // An HTTP pairing has no binding: it is textual agreement between two
+        // strings written independently on either side of a wire, and it is
+        // right only as long as both stay written that way.
+        //
+        // `medium` when the client wrote the whole path from the root and it
+        // aligns with the route template segment for segment. `low` when the
+        // path was matched by its TAIL, because a base URL hid the front of it
+        // (`${API}/users` against `GET /api/users`) — the hidden prefix could
+        // belong to a different service entirely.
+        //
+        // Crossing a repo does NOT demote a REST edge, which is the opposite
+        // of the rule for a bare-name edge. There, two repos sharing a name is
+        // evidence of coincidence; here, the client and the server living in
+        // different repos is the NORMAL shape of the thing being detected —
+        // demoting for it would bury exactly the edges this pass exists to
+        // draw. `crossRepo` is stamped instead, so a consumer can find them
+        // without confusing "crosses a repo" with "trust it less".
+        edgeTier: site.suffix ? 'low' : 'medium',
+        ...(sourceRepo ? { sourceRepo } : {}),
+        ...(targetRepo ? { targetRepo } : {}),
+        ...(sourceRepo && targetRepo && sourceRepo !== targetRepo ? { crossRepo: true } : {}),
       },
     });
   }

@@ -160,7 +160,15 @@ export const expressResolver: FrameworkResolver = {
     // Match the route head up to the first arg: (app|router).METHOD('/path',
     // (NOT the whole call — handlers are often inline arrows whose `)`/`{}` the
     // old single-regex couldn't span, so inline-handler routes connected to nothing.)
-    const head = /\b(app|router)\s*\.\s*(get|post|put|patch|delete|all|use)\s*\(\s*['"]([^'"]+)['"]\s*,/g;
+    // `fastify` joins `app` / `router` as a route-registering receiver (P2C):
+    // `fastify.get('/x', handler)` is the idiomatic Fastify spelling and was
+    // producing no route node at all, so a client call onto it had nothing to
+    // pair with. It is safe to add and `server` is not: the cross-tier
+    // synthesizer already lists `fastify` among the receivers that register
+    // routes and can never be an HTTP client (SERVER_NAMES), while `server` is
+    // on its CLIENT_NAMES list — claiming it here would make one name mean
+    // both sides of the wire.
+    const head = /\b(app|router|fastify)\s*\.\s*(get|post|put|patch|delete|all|use)\s*\(\s*['"]([^'"]+)['"]\s*,/g;
     let match: RegExpExecArray | null;
     while ((match = head.exec(safe)) !== null) {
       const method = match[2]!;
@@ -244,7 +252,7 @@ export const expressResolver: FrameworkResolver = {
     // The chained form: `router.route('/:id').get(getProduct).put(protect, updateProduct)`
     // — one path, several methods, each with its own handler. One route node
     // per method, at the line of its `.method(`, bound like the plain form.
-    const chainHead = /\b(?:app|router)\s*\.\s*route\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+    const chainHead = /\b(?:app|router|fastify)\s*\.\s*route\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
     while ((match = chainHead.exec(safe)) !== null) {
       const routePath = match[1]!;
       let at = match.index + match[0].length;

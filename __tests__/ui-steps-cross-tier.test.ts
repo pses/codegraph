@@ -315,6 +315,14 @@ describe('http-client: a literal path in a client call reaches its own route', (
       method: 'POST',
       href: '/api/users',
       registeredAt: 'apps/api/src/app.ts:4',
+      // P2C: confidence under the unambiguous key (`tier` above is the
+      // DIRECTION), plus the repo of each end. This monorepo fixture is one
+      // repo laid out under `apps/`, so both ends stamp `apps` and no
+      // `crossRepo` marker is set; `edgeTier` is `medium` because the client
+      // wrote the whole path from the root, not a tail behind a base URL.
+      edgeTier: 'medium',
+      sourceRepo: 'apps',
+      targetRepo: 'apps',
     });
   });
 
