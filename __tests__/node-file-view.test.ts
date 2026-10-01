@@ -89,6 +89,8 @@ describe('codegraph_node file-view (Read replacement)', () => {
     expect(out).toMatch(/lines 1[–-]\d+ of \d+/); // explicit window note
     expect(out).not.toContain('(output truncated)'); // not the generic 15k chop
     expect(out).toMatch(/^1\texport function big/m); // the head of the window is real source
+    // Stays under the host's inline tool-result limit, so it is never spilled to a temp file.
+    expect(out.length).toBeLessThanOrEqual(20000);
   });
 
   it('reads a config file with secret values masked — #383 secret safety', async () => {

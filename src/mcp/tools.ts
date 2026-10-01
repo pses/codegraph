@@ -6118,10 +6118,12 @@ export class ToolHandler {
 
     // Read-parity windowing: `offset`/`limit` mean exactly what they do on Read
     // (1-based start line; max line count). Default: the whole file, capped like
-    // Read at 2000 lines and bounded by a char budget that tracks explore's
-    // proven-safe ~38k response ceiling. Overflow is stated explicitly (Read
-    // paginates too) — never the silent 15k truncateOutput chop.
-    const CHAR_BUDGET = 38000;
+    // Read at 2000 lines and bounded by a char budget under the host's inline
+    // tool-result limit, like explore's hardCeiling (~25K): above it Copilot CLI
+    // externalizes the result to a temp file the agent may not be allowed to
+    // read back. Overflow is stated explicitly (Read paginates too) — never the
+    // silent 15k truncateOutput chop.
+    const CHAR_BUDGET = 19500; // + the pagination note stays under 20000
     const DEFAULT_LIMIT = 2000;
     const offset = Math.max(1, opts.offset ?? 1);
     if (offset > total) {
