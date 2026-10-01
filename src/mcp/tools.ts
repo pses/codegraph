@@ -41,6 +41,7 @@ import {
 } from 'fs';
 import { createHash } from 'crypto';
 import { clamp, validatePathWithinRoot, validateProjectPath, isConfigLeafNode, CONFIG_LEAF_LANGUAGES } from '../utils';
+import { maskConfigSource, REDACTED } from '../config-masking';
 import { guardLabel, guardsForFileSync, siteKey, supportsBranchGuards, warmBranchGuardGrammars } from '../graph/branch-guards';
 import { findDynamicBoundaries, type BoundarySite } from '../graph/dynamic-boundary-report';
 import { countImplementers } from '../graph/type-hierarchy';
@@ -1137,7 +1138,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_node',
-    description: 'Two modes. (1) READ A FILE — use INSTEAD of the Read tool: pass `file` (a path or basename) with no `symbol` and it returns that file\'s current on-disk source with line numbers, exactly the shape Read gives you (`<n>\\t<line>`, safe to Edit from), narrowable with `offset`/`limit` just like Read — PLUS a one-line note of which files depend on it. Same bytes as Read, faster (served from the index), with the blast radius attached. Use it whenever you would Read a source file. (2) ONE SYMBOL you can name — its location, signature, verbatim source (includeCode=true) and caller/callee trail in one call, so before changing it you see what calls it and what your edit would break. For an AMBIGUOUS name it returns EVERY matching definition\'s body in one call (so you never Read a file to find the right overload); pass `file`/`line` to pin one. Use codegraph_explore for several related symbols or the full flow.',
+    description: 'Two modes. (1) READ A FILE — use INSTEAD of the Read tool: pass `file` (a path or basename) with no `symbol` and it returns that file\'s current on-disk source with line numbers, exactly the shape Read gives you (`<n>\\t<line>`, safe to Edit from), narrowable with `offset`/`limit` just like Read — PLUS a one-line note of which files depend on it. Same bytes as Read, faster (served from the index), with the blast radius attached. Use it whenever you would Read a source file. yaml/properties files come back with secret-like values replaced by `<redacted>` (flags, numbers and plain words stay visible) — never Edit from a redacted line. (2) ONE SYMBOL you can name — its location, signature, verbatim source (includeCode=true) and caller/callee trail in one call, so before changing it you see what calls it and what your edit would break. For an AMBIGUOUS name it returns EVERY matching definition\'s body in one call (so you never Read a file to find the right overload); pass `file`/`line` to pin one. Use codegraph_explore for several related symbols or the full flow.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -6020,8 +6021,8 @@ export class ToolHandler {
    * Parity goal: the numbered source block is byte-for-byte the shape Read
    * returns (`<n>\t<line>`, no padding), so the agent treats it as a Read — only
    * faster (served from the index) and with the blast radius attached. Security:
-   * yaml/properties files are summarized by key, never dumped (#383); reads go
-   * through validatePathWithinRoot (#527).
+   * yaml/properties files are served with secret-shaped values masked (#383,
+   * see config-masking.ts); reads go through validatePathWithinRoot (#527).
    */
   private async handleFileView(
     cg: CodeGraph,
@@ -6086,15 +6087,6 @@ export class ToolHandler {
       return this.textResult(this.truncateOutput(out.join('\n')));
     }
 
-    // SECURITY (#383): never dump a raw config/data file — a yaml/properties
-    // line is `key: <secret>`. Summarize by key and point to a real Read.
-    if (CONFIG_LEAF_LANGUAGES.has(resolved.language)) {
-      const out = [`**${filePath}** — configuration/data file, ${depSummary}`, ''];
-      if (nodes.length) out.push(...symbolMap('**Keys (values withheld for safety)**'));
-      out.push('', '> Values may be secrets, so codegraph indexes keys only. Read the file directly if you need a value.');
-      return this.textResult(this.truncateOutput(out.join('\n')));
-    }
-
     // Read the current bytes from disk through the security chokepoint
     // (validatePathWithinRoot: blocks `../` traversal and symlink escapes, #527).
     const abs = validatePathWithinRoot(cg.getProjectRoot(), filePath);
@@ -6107,6 +6099,16 @@ export class ToolHandler {
       if (nodes.length) out.push(...symbolMap('**Symbols**'));
       out.push('', `> Read \`${filePath}\` directly for its current content.`);
       return this.textResult(this.truncateOutput(out.join('\n')));
+    }
+
+    // SECURITY (#383): a yaml/properties line is `key: <secret>`. Serve it with
+    // secret-shaped values masked, line numbers intact — an agent with no
+    // filesystem tools must still be able to read a flag or a port here.
+    let maskNote = '';
+    if (CONFIG_LEAF_LANGUAGES.has(resolved.language)) {
+      const masked = maskConfigSource(content, resolved.language);
+      content = masked.text;
+      maskNote = ` · configuration file: ${masked.masked ? `${masked.masked} line${masked.masked === 1 ? '' : 's'} with secret-like values shown as \`${REDACTED}\`` : 'no secret-like values found'}`;
     }
 
     // Split exactly as Read does — keep the trailing empty line a final newline
@@ -6127,7 +6129,7 @@ export class ToolHandler {
     }
     const maxLines = Math.max(1, opts.limit ?? DEFAULT_LIMIT);
     const start = offset - 1; // 0-based
-    const header = `**${filePath}** — ${total} lines, ${nodes.length} symbol${nodes.length === 1 ? '' : 's'} · ${depSummary}`;
+    const header = `**${filePath}** — ${total} lines, ${nodes.length} symbol${nodes.length === 1 ? '' : 's'} · ${depSummary}${maskNote}`;
 
     // Numbered lines, byte-for-byte Read's shape: `<n>\t<line>`, no left-pad.
     const numbered: string[] = [];

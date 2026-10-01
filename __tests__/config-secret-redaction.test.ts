@@ -99,4 +99,13 @@ describe('config secret redaction (#383)', () => {
     expect(text).toContain('password'); // found the node
     expect(text).not.toContain(SECRET); // value redacted from the code path
   });
+
+  it('codegraph_node file mode reads the config with the secret masked', async () => {
+    for (const file of ['application.yml', 'application.properties']) {
+      const res = await handler.execute('codegraph_node', { file });
+      const text = res.content.map((c) => c.text).join('\n');
+      expect(text, file).toContain('<redacted>'); // the file was read, its secret masked
+      expect(text, file).not.toContain(SECRET);
+    }
+  });
 });

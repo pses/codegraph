@@ -3,7 +3,7 @@
  * the Read tool — current source with `<n>\t<line>` numbering (byte-for-byte
  * Read's shape), narrowable with offset/limit — plus a one-line blast-radius
  * header. `symbolsOnly` returns the structural map instead. Config/data files
- * are summarized by key, never dumped (#383).
+ * are served with secret-like values masked (#383).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
@@ -91,10 +91,12 @@ describe('codegraph_node file-view (Read replacement)', () => {
     expect(out).toMatch(/^1\texport function big/m); // the head of the window is real source
   });
 
-  it('does NOT dump a config/data file (yaml/properties) — #383 secret safety', async () => {
+  it('reads a config file with secret values masked — #383 secret safety', async () => {
     const out = await text({ file: 'application.properties' });
-    expect(out).not.toContain('SUPERSECRET123'); // the value never reaches the agent
-    expect(out.toLowerCase()).toMatch(/config|values withheld/);
+    expect(out).not.toContain('SUPERSECRET123'); // the secret never reaches the agent
+    expect(out).toMatch(/^1\tspring\.datasource\.password=<redacted>$/m); // its key does, on its real line
+    expect(out).toMatch(/^2\tserver\.port=8080$/m); // a harmless value is shown as written
+    expect(out).toMatch(/1 line with secret-like values/);
   });
 
   it('symbolsOnly returns the structural map, not the source', async () => {
