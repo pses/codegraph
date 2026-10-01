@@ -132,7 +132,8 @@ export function validatePathWithinRoot(
     if (options?.allowSymlinkEscape) {
       return realResolved;
     }
-    return isWithinDir(realResolved, realRoot) ? realResolved : null;
+    if (isWithinDir(realResolved, realRoot)) return realResolved;
+    return withinTrustedRootLink(normalizedRoot, resolved, realResolved) ? realResolved : null;
   } catch (err) {
     // ENOENT: the path doesn't exist yet (a file about to be written, or an
     // index entry for a since-deleted file) — no symlink to follow, and the
@@ -142,6 +143,31 @@ export function validatePathWithinRoot(
       return resolved;
     }
     return null;
+  }
+}
+
+/**
+ * CODEGRAPH_TRUST_ROOT_LINKS=1: a symlink placed DIRECTLY in the project root is
+ * a source root. A merged multi-repo project (use-case-analyzer v2) is a
+ * directory holding one such link per repository, each pointing at that repo's
+ * checkout elsewhere on disk; without this every source read there escapes the
+ * root and is refused (#527), so no file can be read at all.
+ *
+ * Only the first path segment may be the link, and the real path must stay
+ * inside THAT link's real target — a symlink inside a linked repo that escapes
+ * the repo, or a link deeper in the tree, is still rejected. Off unless the
+ * variable is exactly `1`.
+ */
+function withinTrustedRootLink(root: string, resolved: string, realResolved: string): boolean {
+  if (process.env.CODEGRAPH_TRUST_ROOT_LINKS !== '1') return false;
+  const first = path.relative(root, resolved).split(path.sep)[0];
+  if (!first || first === '..') return false;
+  const linkPath = path.join(root, first);
+  try {
+    if (!fs.lstatSync(linkPath).isSymbolicLink()) return false;
+    return isWithinDir(realResolved, fs.realpathSync(linkPath));
+  } catch {
+    return false;
   }
 }
 

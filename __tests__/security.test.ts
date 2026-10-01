@@ -252,6 +252,44 @@ describe('Symlink escape prevention (#527)', () => {
     ).toBeNull();
   });
 
+  // A merged multi-repo project dir (use-case-analyzer v2) holds one symlink per
+  // repository, each pointing at that repo's checkout outside the dir. With
+  // CODEGRAPH_TRUST_ROOT_LINKS=1 such a ROOT-LEVEL link is a source root: paths
+  // under it are served, but only while they stay inside its target.
+  describe('CODEGRAPH_TRUST_ROOT_LINKS=1 (repo links planted in the project root)', () => {
+    beforeEach(() => { process.env.CODEGRAPH_TRUST_ROOT_LINKS = '1'; });
+    afterEach(() => { delete process.env.CODEGRAPH_TRUST_ROOT_LINKS; });
+
+    it('serves a file under a root-level dir link', () => {
+      if (!link(path.join(root, 'repo-a'), path.join(outside, 'pkg'))) return;
+      expect(validatePathWithinRoot(root, 'repo-a/secret.txt')).toBe(path.join(outside, 'pkg', 'secret.txt'));
+    });
+
+    it('still rejects a symlink INSIDE a linked repo that escapes that repo', () => {
+      if (!link(path.join(root, 'repo-a'), path.join(outside, 'pkg'))) return;
+      const other = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cg-other-')));
+      try {
+        fs.writeFileSync(path.join(other, 'x.txt'), 'X\n');
+        if (!link(path.join(outside, 'pkg', 'out'), path.join(other, 'x.txt'))) return;
+        expect(validatePathWithinRoot(root, 'repo-a/out')).toBeNull();
+      } finally {
+        fs.rmSync(other, { recursive: true, force: true });
+      }
+    });
+
+    it('still rejects a nested (non-root) dir link and a ../ traversal', () => {
+      if (!link(path.join(root, 'src', 'deep'), path.join(outside, 'pkg'))) return;
+      expect(validatePathWithinRoot(root, 'src/deep/secret.txt')).toBeNull();
+      expect(validatePathWithinRoot(root, `repo-a/../../${path.basename(outside)}/pkg/secret.txt`)).toBeNull();
+    });
+
+    it('is off unless the variable is exactly 1', () => {
+      if (!link(path.join(root, 'repo-a'), path.join(outside, 'pkg'))) return;
+      process.env.CODEGRAPH_TRUST_ROOT_LINKS = 'true';
+      expect(validatePathWithinRoot(root, 'repo-a/secret.txt')).toBeNull();
+    });
+  });
+
   it('end-to-end: getCode never serves an out-of-root file reached via a dir symlink', async () => {
     fs.writeFileSync(path.join(outside, 'pkg', 'leak.ts'),
       'export function leaked() { return "LEAKED-ZZZ-9"; }\n');
