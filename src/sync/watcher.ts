@@ -35,7 +35,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { isSourceFile, buildScopeIgnore, type ScopeIgnore } from '../extraction';
 import { loadExtensionOverrides, PROJECT_CONFIG_FILENAME } from '../project-config';
-import { logDebug, logWarn } from '../errors';
+import { logDebug, logWarn, LockUnavailableError } from '../errors';
 import { normalizePath } from '../utils';
 import { isCodeGraphDataDir } from '../directory';
 import { watchDisabledReason } from './watch-policy';
@@ -219,12 +219,7 @@ export interface WatchOptions {
  * `finally` block reschedules. Quiet (debug-only) because a long-running
  * external indexer can hit this every debounce cycle.
  */
-export class LockUnavailableError extends Error {
-  constructor(message = 'CodeGraph file lock unavailable; another process is writing') {
-    super(message);
-    this.name = 'LockUnavailableError';
-  }
-}
+export { LockUnavailableError } from '../errors';
 
 /**
  * Per-file pending entry — tracks a source file the watcher saw an event for

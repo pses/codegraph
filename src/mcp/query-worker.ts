@@ -26,6 +26,7 @@ import type { ToolResult } from './tools';
 
 interface WorkerInit {
   root: string;
+  readOnly?: boolean;
 }
 
 interface CallMessage {
@@ -44,7 +45,7 @@ const loadToolHandler = (): typeof import('./tools').ToolHandler =>
 
 if (parentPort) {
   const port = parentPort;
-  const { root } = workerData as WorkerInit;
+  const { root, readOnly = false } = workerData as WorkerInit;
 
   // Open the default project's READ connection once, at spawn. Other repos are
   // opened lazily on first cross-project (projectPath) call by the ToolHandler's
@@ -53,8 +54,8 @@ if (parentPort) {
   let handler: InstanceType<typeof import('./tools').ToolHandler> | null = null;
   let initError: string | null = null;
   try {
-    const cg = loadCodeGraph().openSync(root);
-    handler = new (loadToolHandler())(cg);
+    const cg = loadCodeGraph().openSync(root, { readOnly });
+    handler = new (loadToolHandler())(cg, undefined, readOnly);
   } catch (err) {
     initError = err instanceof Error ? err.message : String(err);
   }

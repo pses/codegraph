@@ -92,6 +92,8 @@ function firstRootPath(result: unknown): string | null {
 }
 
 export interface MCPSessionOptions {
+  /** Private direct/frozen host extension, never offered as an agent tool. */
+  allowSessionReset?: boolean;
   /**
    * Explicit project path from the `--path` CLI flag. When set, the session
    * will not bother asking the client for `roots/list` — we already know
@@ -120,6 +122,8 @@ export class MCPSession {
    * the session — a reconnecting client starts clean.
    */
   private readonly exploreSession = new ExploreSessionState();
+  private readonly allowSessionReset: boolean;
+  private activeToolCalls = 0;
 
   constructor(
     private transport: JsonRpcTransport,
@@ -127,6 +131,7 @@ export class MCPSession {
     opts: MCPSessionOptions = {},
   ) {
     this.explicitProjectPath = opts.explicitProjectPath ?? null;
+    this.allowSessionReset = opts.allowSessionReset === true;
   }
 
   /**
@@ -172,7 +177,19 @@ export class MCPSession {
         if (isRequest) await this.handleToolsList(message as JsonRpcRequest);
         break;
       case 'tools/call':
-        if (isRequest) await this.handleToolsCall(message as JsonRpcRequest);
+        if (isRequest) {
+          this.activeToolCalls++;
+          try { await this.handleToolsCall(message as JsonRpcRequest); }
+          finally { this.activeToolCalls--; }
+        }
+        break;
+      case 'uca/resetSession':
+        if (isRequest) {
+          const id = (message as JsonRpcRequest).id;
+          if (!this.allowSessionReset) this.transport.sendError(id, ErrorCodes.MethodNotFound, 'Session reset not enabled');
+          else if (this.activeToolCalls) this.transport.sendError(id, ErrorCodes.InvalidRequest, 'Tool call in flight');
+          else { this.exploreSession.clear(); this.transport.sendResult(id, { version: 1 }); }
+        }
         break;
       case 'ping':
         if (isRequest) this.transport.sendResult((message as JsonRpcRequest).id, {});
@@ -251,7 +268,7 @@ export class MCPSession {
     // Respond to the handshake BEFORE doing any heavy init — see issue #172.
     this.transport.sendResult(request.id, {
       protocolVersion: PROTOCOL_VERSION,
-      capabilities: { tools: {} },
+      capabilities: { tools: {}, ...(this.allowSessionReset ? { experimental: { 'uca/session-reset': { version: 1 } } } : {}) },
       serverInfo: SERVER_INFO,
       instructions: initializeInstructions(indexed ? SERVER_INSTRUCTIONS : SERVER_INSTRUCTIONS_NO_ROOT_INDEX),
     });

@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { fileURLToPath } from 'node:url';
 
 /**
  * The SHARED base. `vitest.workspace.mts` extends it twice — once for the
@@ -7,6 +8,7 @@ import { defineConfig } from 'vitest/config';
  * a browser test needs cannot leak into the other 200-odd suites.
  */
 export default defineConfig({
+  resolve: { alias: [{ find: /^\.\/lazy-engine$/, replacement: fileURLToPath(new URL('./__tests__/lazy-engine-eager.ts', import.meta.url)) }] },
   test: {
     globals: true,
     environment: 'node',

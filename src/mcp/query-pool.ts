@@ -89,6 +89,8 @@ interface Job {
 }
 
 export interface QueryPoolOptions {
+  /** Frozen readers must not migrate or repair their SQLite connections. */
+  readOnly?: boolean;
   /** Default project root each worker opens at spawn. */
   root: string;
   /** Max worker threads. Defaults to `clamp(cores-1, 1, 16)`. */
@@ -164,7 +166,7 @@ export class QueryPool {
     this.maxSize = Math.max(1, Math.min(opts.size ?? Math.max(1, os.cpus().length - 1), MAX_POOL_SIZE));
     this.softTimeoutMs = opts.softTimeoutMs ?? resolveBusyTimeoutMs();
     this.maxRetries = opts.maxRetries ?? 1;
-    this.createWorker = opts.createWorker ?? (() => new Worker(WORKER_FILE, { workerData: { root: this.root } }));
+    this.createWorker = opts.createWorker ?? (() => new Worker(WORKER_FILE, { workerData: { root: this.root, readOnly: opts.readOnly ?? false } }));
     this.spawnOne(); // one eager warm worker, ready for the first call
   }
 

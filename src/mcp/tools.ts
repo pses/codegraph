@@ -1354,7 +1354,7 @@ export class ToolHandler {
    */
   private readonly sessionRepos: readonly string[] | undefined;
 
-  constructor(private cg: CodeGraph | null, sessionRepos?: readonly string[]) {
+  constructor(private cg: CodeGraph | null, sessionRepos?: readonly string[], private readonly readOnly = false) {
     this.sessionRepos = sessionRepos ?? parseMcpReposEnv(process.env.CODEGRAPH_MCP_REPOS);
   }
 
@@ -1655,7 +1655,7 @@ export class ToolHandler {
     const cached = this.projectCache.get(resolvedRoot);
     if (cached) return this.freshen(cached);
 
-    const cg = loadCodeGraph().openSync(resolvedRoot);
+    const cg = loadCodeGraph().openSync(resolvedRoot, { readOnly: this.readOnly || this.cg?.readOnly === true });
     this.projectCache.set(resolvedRoot, cg);
     return cg;
   }

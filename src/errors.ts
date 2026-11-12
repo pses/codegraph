@@ -252,3 +252,10 @@ export function logWarn(message: string, context?: Record<string, unknown>): voi
 export function logError(message: string, context?: Record<string, unknown>): void {
   currentLogger.error(message, context);
 }
+
+export class LockUnavailableError extends Error {
+  constructor(message = 'CodeGraph file lock unavailable; another process is writing') {
+    super(message);
+    this.name = 'LockUnavailableError';
+  }
+}

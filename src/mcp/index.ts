@@ -362,6 +362,7 @@ export class MCPServer {
     const transport = new StdioTransport();
     this.session = new MCPSession(transport, this.engine, {
       explicitProjectPath: this.projectPath,
+      allowSessionReset: process.env.CODEGRAPH_FROZEN === '1' && process.env.CODEGRAPH_ALLOW_SESSION_RESET === '1',
     });
 
     if (this.projectPath) {

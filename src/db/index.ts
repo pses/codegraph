@@ -83,7 +83,7 @@ export class DatabaseConnection {
    */
   private openedInode: string | null;
 
-  private constructor(db: SqliteDatabase, dbPath: string, backend: SqliteBackend) {
+  private constructor(db: SqliteDatabase, dbPath: string, backend: SqliteBackend, readonly readOnly = false) {
     this.db = db;
     this.dbPath = dbPath;
     this.backend = backend;
@@ -124,13 +124,23 @@ export class DatabaseConnection {
   /**
    * Open an existing database
    */
-  static open(dbPath: string): DatabaseConnection {
+  static open(dbPath: string, options: { readOnly?: boolean } = {}): DatabaseConnection {
     if (!fs.existsSync(dbPath)) {
       throw new Error(`Database not found: ${dbPath}`);
     }
 
-    const { db, backend } = createDatabase(dbPath);
-
+    const { db, backend } = createDatabase(dbPath, options);
+    if (options.readOnly) {
+      try {
+        db.pragma('busy_timeout = 5000');
+        db.pragma('cache_size = -64000');
+        db.pragma('mmap_size = 268435456');
+        if (getCurrentVersion(db) !== CURRENT_SCHEMA_VERSION) {
+          throw new Error('Unsupported frozen index schema; re-index with this CodeGraph version before serving');
+        }
+        return new DatabaseConnection(db, dbPath, backend, true);
+      } catch (error) { db.close(); throw error; }
+    }
     configureConnection(db);
 
     // Check and run migrations if needed

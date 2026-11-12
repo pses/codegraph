@@ -34,23 +34,15 @@ import {
   removeDirectory,
   validateDirectory,
 } from './directory';
-import {
-  ExtractionOrchestrator,
-  IndexProgress,
-  IndexResult,
-  SyncResult,
-  extractFromSource,
-  initGrammars,
-} from './extraction';
-import {
-  ReferenceResolver,
-  createResolver,
-  ResolutionResult,
-} from './resolution';
+import type { ExtractionOrchestrator, IndexProgress, IndexResult, SyncResult } from './extraction';
+import type { ReferenceResolver, ResolutionResult } from './resolution';
+import { initGrammars } from './extraction/grammars';
+import { engine } from './lazy-engine';
 import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
-import { FileWatcher, WatchOptions, PendingFile, LockUnavailableError } from './sync';
+import type { FileWatcher, WatchOptions, PendingFile } from './sync';
+import { LockUnavailableError } from './errors';
 import { EXTRACTION_VERSION } from './extraction/extraction-version';
 import { getCodeGraphDir } from './directory';
 import { deriveProjectNameTokens } from './search/query-utils';
@@ -75,9 +67,9 @@ export {
   findNearestCodeGraphRoot,
   CODEGRAPH_DIR,
 } from './directory';
-export { IndexProgress, IndexResult, SyncResult } from './extraction';
-export { detectLanguage, isLanguageSupported, isGrammarLoaded, getSupportedLanguages, initGrammars, loadGrammarsForLanguages, loadAllGrammars } from './extraction';
-export { ResolutionResult } from './resolution';
+export type { IndexProgress, IndexResult, SyncResult } from './extraction';
+export { detectLanguage, isLanguageSupported, isGrammarLoaded, getSupportedLanguages, initGrammars, loadGrammarsForLanguages, loadAllGrammars } from './extraction/grammars';
+export type { ResolutionResult } from './resolution';
 export {
   CodeGraphError,
   FileError,
@@ -93,8 +85,9 @@ export {
   defaultLogger,
 } from './errors';
 export { Mutex, FileLock, processInBatches, debounce, throttle, MemoryMonitor } from './utils';
-export { FileWatcher, WatchOptions, PendingFile, LockUnavailableError } from './sync';
-export { MCPServer } from './mcp';
+export type { WatchOptions, PendingFile } from './sync';
+export { LockUnavailableError } from './errors';
+export { FileWatcher, MCPServer } from './lazy-engine';
 
 /**
  * Options for initializing a new CodeGraph project
@@ -114,7 +107,7 @@ export interface OpenOptions {
   /** Whether to run sync if files have changed */
   sync?: boolean;
 
-  /** Whether to run in read-only mode */
+  /** Read current-schema index without writer repair or indexing initialization. */
   readOnly?: boolean;
 }
 
@@ -156,8 +149,18 @@ export class CodeGraph {
   // Assigned via wireLayers() from the constructor (and again on reopen) — the
   // `!` tells TS these are definitely set even though the assignment is one
   // method call away from the constructor body.
-  private orchestrator!: ExtractionOrchestrator;
-  private resolver!: ReferenceResolver;
+  private builtOrchestrator: ExtractionOrchestrator | null = null;
+  private builtResolver: ReferenceResolver | null = null;
+
+  // Frozen readers navigate an already-resolved graph; indexing layers detect
+  // frameworks and scan sources, so do not construct them for read-only opens.
+  private get orchestrator(): ExtractionOrchestrator {
+    return this.builtOrchestrator ??= new (engine().ExtractionOrchestrator)(this.projectRoot, this.queries);
+  }
+  private get resolver(): ReferenceResolver {
+    return this.builtResolver ??= engine().createResolver(this.projectRoot, this.queries);
+  }
+  get readOnly(): boolean { return this.db.readOnly; }
   private graphManager!: GraphQueryManager;
   private traverser!: GraphTraverser;
   private contextBuilder!: ContextBuilder;
@@ -232,8 +235,9 @@ export class CodeGraph {
       }
     });
 
-    this.orchestrator = new ExtractionOrchestrator(this.projectRoot, this.queries);
-    this.resolver = createResolver(this.projectRoot, this.queries);
+    this.builtOrchestrator = null;
+    this.builtResolver = null;
+    if (!this.readOnly) { void this.orchestrator; void this.resolver; }
     this.graphManager = new GraphQueryManager(this.queries);
     this.traverser = new GraphTraverser(this.queries);
     this.contextBuilder = createContextBuilder(
@@ -263,7 +267,7 @@ export class CodeGraph {
     // Open the live file FIRST — if that throws (e.g. mid-recreate), the old
     // handle stays in place and the caller retries on the next query, rather
     // than leaving this instance with no connection at all.
-    const fresh = DatabaseConnection.open(dbPath);
+    const fresh = DatabaseConnection.open(dbPath, { readOnly: this.readOnly });
     const stale = this.db;
     this.db = fresh;
     this.queries = new QueryBuilder(fresh.getDb());
@@ -344,7 +348,7 @@ export class CodeGraph {
    * @returns A CodeGraph instance
    */
   static async open(projectRoot: string, options: OpenOptions = {}): Promise<CodeGraph> {
-    await initGrammars();
+    if (!options.readOnly) await initGrammars();
     const resolvedRoot = path.resolve(projectRoot);
 
     // Check if initialized
@@ -360,7 +364,7 @@ export class CodeGraph {
 
     // Open database
     const dbPath = getDatabasePath(resolvedRoot);
-    const db = DatabaseConnection.open(dbPath);
+    const db = DatabaseConnection.open(dbPath, options);
     const queries = new QueryBuilder(db.getDb());
 
     const instance = new CodeGraph(db, queries, resolvedRoot);
@@ -424,7 +428,7 @@ export class CodeGraph {
   /**
    * Open synchronously (without sync)
    */
-  static openSync(projectRoot: string): CodeGraph {
+  static openSync(projectRoot: string, options: OpenOptions = {}): CodeGraph {
     const resolvedRoot = path.resolve(projectRoot);
 
     // Check if initialized
@@ -440,7 +444,7 @@ export class CodeGraph {
 
     // Open database
     const dbPath = getDatabasePath(resolvedRoot);
-    const db = DatabaseConnection.open(dbPath);
+    const db = DatabaseConnection.open(dbPath, options);
     const queries = new QueryBuilder(db.getDb());
 
     return new CodeGraph(db, queries, resolvedRoot);
@@ -1074,7 +1078,7 @@ export class CodeGraph {
   watch(options: WatchOptions = {}): boolean {
     if (this.watcher?.isActive()) return true;
 
-    this.watcher = new FileWatcher(
+    this.watcher = new (engine().FileWatcher)(
       this.projectRoot,
       async (paths?: string[]) => {
         const result = await this.sync({ paths });
@@ -1253,7 +1257,7 @@ export class CodeGraph {
    * Extract nodes and edges from source code (without storing)
    */
   extractFromSource(filePath: string, source: string): ExtractionResult {
-    return extractFromSource(filePath, source);
+    return engine().extractFromSource(filePath, source);
   }
 
   // ===========================================================================

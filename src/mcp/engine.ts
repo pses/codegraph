@@ -98,7 +98,7 @@ export class MCPEngine {
       // flag routes through (same shape as `--no-watch` → CODEGRAPH_NO_WATCH).
       frozen: opts.frozen ?? (process.env.CODEGRAPH_FROZEN === '1'),
     };
-    this.toolHandler = new ToolHandler(null);
+    this.toolHandler = new ToolHandler(null, undefined, this.opts.frozen);
   }
 
   /**
@@ -115,7 +115,7 @@ export class MCPEngine {
       return;
     }
     try {
-      this.queryPool = new QueryPool({ root, size });
+      this.queryPool = new QueryPool({ root, size, readOnly: this.opts.frozen });
       this.toolHandler.setQueryPool(this.queryPool);
       process.stderr.write(`[CodeGraph MCP] Query pool: up to ${size} worker thread(s) for concurrent reads.\n`);
     } catch (err) {
@@ -208,7 +208,7 @@ export class MCPEngine {
         try { this.cg.close(); } catch { /* ignore */ }
         this.cg = null;
       }
-      this.cg = loadCodeGraph().openSync(resolvedRoot);
+      this.cg = loadCodeGraph().openSync(resolvedRoot, { readOnly: this.opts.frozen });
       this.projectPath = resolvedRoot;
       this.toolHandler.setDefaultCodeGraph(this.cg);
       this.startWatching();
@@ -272,7 +272,7 @@ export class MCPEngine {
 
     this.projectPath = resolvedRoot;
     try {
-      this.cg = await loadCodeGraph().open(resolvedRoot);
+      this.cg = await loadCodeGraph().open(resolvedRoot, { readOnly: this.opts.frozen });
       this.toolHandler.setDefaultCodeGraph(this.cg);
       this.startWatching();
       this.catchUpSync();
