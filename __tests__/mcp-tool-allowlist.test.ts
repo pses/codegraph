@@ -5,6 +5,10 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { ToolHandler } from '../src/mcp/tools';
+import CodeGraph from '../src/index';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 const ENV = 'CODEGRAPH_MCP_TOOLS';
 
@@ -60,4 +64,28 @@ describe('CODEGRAPH_MCP_TOOLS allowlist', () => {
     const res = await new ToolHandler(null).execute('codegraph_search', { query: 'x' });
     expect(res.content[0].text).not.toMatch(/disabled via CODEGRAPH_MCP_TOOLS/);
   });
+});
+
+
+describe('explicit tool surface on an indexed tiny project', () => {
+  const original = process.env[ENV];
+  let cg: CodeGraph | undefined;
+  let dir: string | undefined;
+  afterEach(() => {
+    cg?.close(); cg = undefined;
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    if (original === undefined) delete process.env[ENV]; else process.env[ENV] = original;
+  });
+
+  it.each(['files', 'codegraph_callers,codegraph_callees,impact,files', 'search,node,explore,callers,callees,impact,files'])(
+    'honors the complete explicit allowlist %s even below 500 files', allowlist => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-explicit-tools-'));
+      cg = CodeGraph.initSync(dir);
+      expect(cg.getStats().fileCount).toBe(0);
+      process.env[ENV] = allowlist;
+      expect(new ToolHandler(cg).getTools().map(t => t.name).sort()).toEqual(
+        allowlist.split(',').map(name => `codegraph_${name.replace(/^codegraph_/, '')}`).sort(),
+      );
+    },
+  );
 });
