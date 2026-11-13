@@ -19,7 +19,7 @@ export type Location = 'global' | 'local';
  * lookup. New targets add a value here when they're added to the
  * registry. Keep these short and lowercase.
  */
-export type TargetId = 'claude' | 'cursor' | 'codex' | 'opencode' | 'hermes' | 'gemini' | 'antigravity' | 'kiro' | 'copilot-vscode' | 'copilot-cli' | 'copilot-jetbrains';
+export type TargetId = 'claude' | 'cursor' | 'codex' | 'opencode' | 'hermes' | 'gemini' | 'antigravity' | 'kiro' | 'copilot-vscode' | 'copilot-cli' | 'copilot-jetbrains' | 'bob' | 'droid' | 'windsurf' | 'qwen' | 'dsh' | 'grok' | 'kimi' | 'qoder' | 'pi';
 
 /**
  * Result of `target.detect(location)`.
@@ -93,6 +93,13 @@ export interface AgentTarget {
    * pair lets the orchestrator skip cleanly with a clear message.
    */
   supportsLocation(loc: Location): boolean;
+  /**
+   * Read-only, and quiet. Every target is detected on every run —
+   * including agents codegraph was never installed into — and
+   * `install --refresh` skips the unconfigured ones on the strength of
+   * this answer, so a target that writes or warns here touches a config
+   * it has no business touching (issue #1870).
+   */
   detect(loc: Location): DetectionResult;
   install(loc: Location, opts: InstallOptions): WriteResult;
   /**

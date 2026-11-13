@@ -23,9 +23,10 @@
 
 import { parentPort, workerData } from 'worker_threads';
 import type { ToolResult } from './tools';
+import { collectBeforeExit } from '../worker-teardown';
 
 interface WorkerInit {
-  root: string;
+  root: string | null;
   readOnly?: boolean;
 }
 
@@ -34,6 +35,16 @@ interface CallMessage {
   id: number;
   toolName: string;
   args: Record<string, unknown>;
+}
+
+/** The pool retiring this idle worker: close everything and exit. */
+interface CloseMessage {
+  type: 'close';
+}
+
+/** The pool keeping this idle worker: give back what it can, and say what is left. */
+interface TrimMessage {
+  type: 'trim';
 }
 
 // Mirror the engine's lazy-require of the heavy CodeGraph + tools chain. This
@@ -47,14 +58,15 @@ if (parentPort) {
   const port = parentPort;
   const { root, readOnly = false } = workerData as WorkerInit;
 
-  // Open the default project's READ connection once, at spawn. Other repos are
+  // Open the default project's READ connection once, if present. Other repos are
   // opened lazily on first cross-project (projectPath) call by the ToolHandler's
   // own per-handler cache. openSync does not start a watcher — workers are pure
   // readers; the single watcher/writer stays on the daemon's main thread.
+  let cg: import('../index').default | null = null;
   let handler: InstanceType<typeof import('./tools').ToolHandler> | null = null;
   let initError: string | null = null;
   try {
-    const cg = loadCodeGraph().openSync(root, { readOnly });
+    cg = root ? loadCodeGraph().openSync(root, { readOnly }) : null;
     handler = new (loadToolHandler())(cg, undefined, readOnly);
   } catch (err) {
     initError = err instanceof Error ? err.message : String(err);
@@ -64,7 +76,27 @@ if (parentPort) {
   // against its crash budget (→ fall back to in-process) without hanging.
   port.postMessage({ type: 'ready', ok: initError === null, error: initError });
 
-  port.on('message', (msg: CallMessage) => {
+  port.on('message', (msg: CallMessage | CloseMessage | TrimMessage) => {
+    if (msg?.type === 'close') {
+      try {
+        void handler?.closeAll(); // projects opened through projectPath
+      } catch { /* already closed */ }
+      try {
+        cg?.close();
+      } catch { /* already closed */ }
+      // No GC marking in flight when the thread ends (worker-teardown.ts).
+      collectBeforeExit();
+      process.exit(0);
+    }
+    if (msg?.type === 'trim') {
+      try {
+        handler?.releaseIdleMemory();
+      } catch { /* a worker that can't let go still serves */ }
+      // This thread's own heap and buffers: `rss` is the whole process's.
+      const { heapUsed, external } = process.memoryUsage();
+      port.postMessage({ type: 'trimmed', heldBytes: heapUsed + external });
+      return;
+    }
     if (!msg || msg.type !== 'call') return;
     void serve(msg);
   });

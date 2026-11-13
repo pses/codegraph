@@ -56,8 +56,11 @@ describe('cross-repo edge tiering', () => {
     // repo-b DEFINES the shared types.
     fs.writeFileSync(
       path.join(dir, 'repo-b', 'widget.ts'),
-      ['export class Widget {', '  render(): string { return "widget"; }', '}', 'export class DbxFolderInfo {', '  name: string = "";', '}'].join('\n'),
+      ['export class Widget {', '  render(): string { return "widget"; }', '}'].join('\n'),
     );
+
+    // Upstream respects TS module visibility: a no-import type must actually be global.
+    fs.writeFileSync(path.join(dir, 'repo-b', 'globals.d.ts'), 'declare class DbxFolderInfo { name: string; }\n');
 
     // repo-a: (1) cross-repo IMPORT of Widget, (2) a bare-NAME use of DbxFolderInfo
     // with NO import (cross-repo name match), (3) a same-repo use of Helper.

@@ -34,99 +34,21 @@
 
 import type CodeGraph from '../index';
 import type { Node, Edge } from '../types';
-import { isTestFile } from '../search/query-utils';
+import { isTestFile, splitAtCjkSwitches, isQueryNameToken } from '../search/query-utils';
 
-/**
- * Rust path roots that have no file-system equivalent — `crate` is the
- * current crate, `super` is the parent module, `self` is the current
- * module. Used by `matchesSymbol` to strip these before file-path
- * matching so `crate::configurator::stage_apply::run` resolves the
- * same as `configurator::stage_apply::run`.
- */
-export const RUST_PATH_PREFIXES = new Set(['crate', 'super', 'self']);
+import { qualifiedSymbolMatches } from './symbol-lookup';
+import { goPackageReaderFor } from './go-package';
 
-/**
- * Last `::` / `.` / `/`-separated segment of a qualified symbol. An Erlang
- * arity tail (`mod::fn/3`, `fn/3`) is stripped first — the useful last segment
- * is the function name, never the digits (#1610).
- */
-export function lastQualifierPart(symbol: string): string {
-  const noArity = symbol.replace(/\/\d{1,3}$/, '') || symbol;
-  const parts = noArity.split(/::|[./]/).filter((p) => p.length > 0);
-  return parts[parts.length - 1] ?? symbol;
-}
-
-/**
- * Check if a node matches a symbol query.
- *
- * Accepts simple names (`run`) and three flavors of qualifier:
- *   - dotted     `Session.request`         (TS/JS/Python)
- *   - colon-pair `stage_apply::run`        (Rust, C++, Ruby)
- *   - slash      `configurator/stage_apply` (path-ish)
- *
- * Multi-level qualifiers compose: `crate::configurator::stage_apply::run`
- * works. Rust path prefixes (`crate`, `super`, `self`) are stripped so
- * the canonical `crate::module::symbol` form resolves.
- *
- * Resolution order, last part must always equal `node.name`:
- *   1. Suffix-match against `qualifiedName` (handles class-scoped methods
- *      where the extractor builds the qualified name from the AST stack)
- *   2. File-path containment (handles file-derived modules in Rust/
- *      Python — `stage_apply::run` matches a `run` in `stage_apply.rs`)
- */
-export function matchesSymbol(node: Node, symbol: string): boolean {
-  // Erlang arity spelling (`fn/3`, `mod:fn/3` → normalized `mod.fn/3`): when
-  // the node's qualifiedName carries an arity (`mod::fn/3`, #1610), the
-  // written arity must match it exactly; the remaining comparison then runs
-  // on the arity-less spelling. A node with no arity in its qualifiedName
-  // keeps the original symbol (a `/` there means a path-ish name instead).
-  const aritySpelling = /^(.+)\/(\d{1,3})$/.exec(symbol);
-  if (aritySpelling) {
-    const nodeArity = /\/(\d{1,3})$/.exec(node.qualifiedName ?? '')?.[1];
-    if (nodeArity !== undefined) {
-      if (nodeArity !== aritySpelling[2]) return false;
-      symbol = aritySpelling[1]!;
-    }
-  }
-  // Simple name match
-  if (node.name === symbol) return true;
-  // File basename match (e.g., "product-card" matches "product-card.liquid")
-  if (node.kind === 'file' && node.name.replace(/\.[^.]+$/, '') === symbol) return true;
-
-  // Qualified-name lookups: split on any supported separator. `\w` keeps
-  // identifier chars (incl. `_`) intact; everything else is treated as
-  // a separator we tolerate.
-  if (!/[.\/]|::/.test(symbol)) return false;
-  const parts = symbol.split(/::|[./]/).filter((p) => p.length > 0);
-  if (parts.length < 2) return false;
-
-  const lastPart = parts[parts.length - 1]!;
-  if (node.name !== lastPart) return false;
-
-  // Stage 1: qualified-name suffix match. The extractor joins the
-  // semantic hierarchy with `::`, so `Session.request` and
-  // `Session::request` both become `Session::request` here.
-  const colonSuffix = parts.join('::');
-  if (node.qualifiedName.includes(colonSuffix)) return true;
-
-  // Stage 2: file-path containment. Rust modules and Python packages
-  // are not in `qualifiedName` — they're encoded in the file path. So
-  // `stage_apply::run` matches a `run` in any file whose path
-  // contains a `stage_apply` segment (with or without an extension).
-  //
-  // Filter out Rust path prefixes that have no file-system equivalent.
-  const containerHints = parts.slice(0, -1).filter((p) => !RUST_PATH_PREFIXES.has(p));
-  if (containerHints.length === 0) return false;
-
-  const segments = node.filePath.split('/').filter((s) => s.length > 0);
-  return containerHints.every((hint) =>
-    segments.some((seg) => seg === hint || seg.replace(/\.[^.]+$/, '') === hint)
-  );
-}
+// Preserve the existing imports while sharing the matcher with the CLI and MCP.
+export { RUST_PATH_PREFIXES, lastQualifierPart, matchesSymbol } from './symbol-lookup';
 
 /**
  * Find ALL symbols matching a name. Used by callers/callees/impact to aggregate
  * results across all matching symbols (e.g., multiple classes with an `execute` method).
+ *
+ * Exact matches only (#1473): a missing / mistyped name must NOT silently
+ * resolve to the top fuzzy FTS hit under the caller's typed label. Closest
+ * hits may appear in `note` as a did-you-mean hint when `nodes` is empty.
  */
 export function findAllSymbols(cg: CodeGraph, symbol: string): { nodes: Node[]; note: string } {
   // Nix option paths: the declaration is stored as `options.<path>` and
@@ -149,42 +71,51 @@ export function findAllSymbols(cg: CodeGraph, symbol: string): { nodes: Node[]; 
       return { nodes, note: '' };
     }
   }
-  let results = cg.searchNodes(symbol, { limit: 50 });
 
-  // Mirror the fallback in `findSymbol` for qualified queries — FTS
-  // strips colons, so a module-qualified lookup needs a second pass
-  // by the bare last part.
-  if (results.length === 0 && /[.\/]|::/.test(symbol)) {
-    const tail = lastQualifierPart(symbol);
-    if (tail && tail !== symbol) results = cg.searchNodes(tail, { limit: 50 });
+  const isQualified = /[.\/]|::/.test(symbol);
+  let exactNodes: Node[];
+
+  if (!isQualified) {
+    // Direct index — every exact-name overload, case-sensitive. Avoids FTS
+    // ranking a differently-cased sibling above the real node (#1473 Fetch).
+    exactNodes = cg.getNodesByName(symbol);
+  } else {
+    // Shared with codegraph_node's lookup: search rank first, the complete
+    // exact-name index when the search's cut misses the definition.
+    exactNodes = qualifiedSymbolMatches(cg, symbol, goPackageReaderFor(cg));
   }
 
-  if (results.length === 0) {
-    return { nodes: [], note: '' };
+  if (exactNodes.length === 0) {
+    const fuzzy = cg.searchNodes(symbol, { limit: 5 });
+    const suggestions = [
+      ...new Set(fuzzy.map((r) => r.node.name).filter((n) => n !== symbol)),
+    ].slice(0, 3);
+    const note =
+      suggestions.length > 0
+        ? `\n\n> **Note:** no symbol named "${symbol}". Did you mean: ${suggestions.join(', ')}?`
+        : '';
+    return { nodes: [], note };
   }
 
-  const exactMatches = results.filter(r => matchesSymbol(r.node, symbol));
-
-  if (exactMatches.length <= 1) {
-    const node = exactMatches[0]?.node ?? results[0]!.node;
-    return { nodes: [node], note: '' };
+  if (exactNodes.length === 1) {
+    return { nodes: exactNodes, note: '' };
   }
 
   // Same generated-file down-rank as findSymbol — keeps callers/callees
   // /impact aggregation aligned (a query against "Send" returns the
   // hand-written implementations before the protobuf scaffold).
-  const isGen = cg.generatedFilePredicate(exactMatches.map((r) => r.node.filePath));
-  const ranked = [...exactMatches].sort((a, b) => {
-    const aGen = isGen(a.node.filePath) ? 1 : 0;
-    const bGen = isGen(b.node.filePath) ? 1 : 0;
+  const isGen = cg.generatedFilePredicate(exactNodes.map((n) => n.filePath));
+  const ranked = [...exactNodes].sort((a, b) => {
+    const aGen = isGen(a.filePath) ? 1 : 0;
+    const bGen = isGen(b.filePath) ? 1 : 0;
     return aGen - bGen;
   });
 
-  const locations = ranked.map(r =>
-    `${r.node.kind} at ${r.node.filePath}:${r.node.startLine}`
+  const locations = ranked.map(
+    (n) => `${n.kind} at ${n.filePath}:${n.startLine}`
   );
   const note = `\n\n> **Note:** Aggregated results across ${ranked.length} symbols named "${symbol}": ${locations.join(', ')}`;
-  return { nodes: ranked.map(r => r.node), note };
+  return { nodes: ranked, note };
 }
 
 /** Node kinds that can sit on a call chain. */
@@ -328,14 +259,19 @@ function isPreciseToken(token: string): boolean {
   return /[._$]|::|\//.test(token) || /[a-z][A-Z]/.test(token) || /^[A-Z]/.test(token);
 }
 
-/** The symbol-shaped tokens of a query, deduped and capped. */
+/**
+ * The symbol-shaped tokens of a query, deduped and capped: names in any
+ * script, cut where Han, kana or Hangul meets another script, at least two
+ * characters in those scripts (`入口 末端`) and three elsewhere (#1262).
+ */
 export function flowTokens(query: string): string[] {
   return [
     ...new Set(
       query
         .split(/[\s,()[\]]+/)
         .map((t) => t.replace(FILE_EXT, '').trim())
-        .filter((t) => t.length >= 3 && /^[A-Za-z_$][\w$]*(?:(?:::|\.)[\w$]+)*$/.test(t))
+        .flatMap(splitAtCjkSwitches)
+        .filter(isQueryNameToken)
     ),
   ].slice(0, MAX_TOKENS);
 }
@@ -351,7 +287,14 @@ export function resolveNamedTokens(
 ): NamedSymbolFlow {
   const directed = opts.mode === 'directed';
   const out = EMPTY_FLOW();
-  const tokens = flowTokens(query);
+  // A directed question names its two ends exactly — a symbol's own name, as
+  // the viewer's links write it: an Objective-C selector (`initWithFrame:`), a
+  // Ruby predicate (`valid?`), a two-letter method (`ok`, Go's `Do`). The
+  // free-text filter below is for explore's bag of words, and it dropped every
+  // one of those, leaving the other end reported as naming nothing.
+  const tokens = directed && opts.from && opts.to
+    ? [...new Set([normalizeToken(opts.from), normalizeToken(opts.to)])]
+    : flowTokens(query);
   out.tokens = tokens;
   if (tokens.length < 2) return out;
 
@@ -360,8 +303,16 @@ export function resolveNamedTokens(
   const segPool = new Set<string>();
   for (const t of tokens) for (const s of t.toLowerCase().split(/::|\./)) if (s) segPool.add(s);
 
+  // RAW edges, not getCallers/getCallees: those return one row per NEIGHBOUR
+  // (the #1086 de-dup), so when a pair is joined by BOTH a static and a
+  // synthesized edge the static one wins and the synthesized one becomes
+  // invisible — which is exactly what happens once a thunk's `dispatch(x)`
+  // is walked statically. The question here is about the graph, not about
+  // callers, so ask the edges directly.
   const hasHeuristicEdge = (id: string): boolean =>
-    [...cg.getCallers(id), ...cg.getCallees(id)].some(({ edge }) => edge.provenance === 'heuristic');
+    [...cg.getIncomingEdges(id), ...cg.getOutgoingEdges(id)].some(
+      (e) => e.provenance === 'heuristic'
+    );
 
   for (const t of tokens) {
     const hits = findAllSymbols(cg, t).nodes;
@@ -438,6 +389,31 @@ function callSitesOf(steps: readonly FlowStep[]): Map<string, number> {
 const NAMED_VISIT_CAP = 1500;
 const DIRECTED_VISIT_CAP = 12_000;
 
+/** How the `named` walk reached a node, and what the route there carries. */
+interface WalkStep {
+  /** The route this one extends: its key in the walk's parent map. */
+  prev: string | null;
+  edge: Edge | null;
+  node: Node;
+  /** Hops from the seed. */
+  depth: number;
+  /** Unnamed hops the route ends on, held against `maxBridge`. */
+  streak: number;
+  /** Named symbols on the route, the seed and this node included. */
+  named: number;
+}
+
+/** A node's callees, read once per search however many routes reach it. */
+type CalleesOf = (id: string) => ReturnType<CodeGraph['getCallees']>;
+
+/** Whether the route ending at `key` passes `nodeId`: a walk back of at most `maxHops` steps. */
+function onRoute(parent: ReadonlyMap<string, WalkStep>, key: string, nodeId: string): boolean {
+  for (let cur: string | null = key; cur !== null; cur = parent.get(cur)!.prev) {
+    if (parent.get(cur)!.node.id === nodeId) return true;
+  }
+  return false;
+}
+
 /**
  * Breadth-first over `calls` edges — synthesized ones included, which is what
  * carries a flow across a callback, a re-render or a JSX child.
@@ -446,33 +422,94 @@ const DIRECTED_VISIT_CAP = 12_000;
  * at most `maxBridge` unnamed symbols may sit between two of them. That cap is
  * what bounds the frontier, so {@link NAMED_VISIT_CAP} is generous.
  *
- * Returns the parent map, so a caller can reconstruct any reached node's path.
+ * A node keeps every route to it that no other route to it beats: one that got
+ * there no later, through as many named symbols, with no more unnamed hops to
+ * end on. One route per node lost a named symbol (#2970): in `entry → mid2 →
+ * leaf` beside `entry → mid1 → deep → leaf`, `leaf` was reached first through
+ * the unnamed `mid2`, so the route through the named `deep` was turned away for
+ * being longer, and a query naming all three got a Flow without `leaf`. A
+ * longer route that passes fewer named symbols is still turned away, so it
+ * can't win the deepest-sink choice over a better one.
+ *
+ * At one depth the same rule settles which route the agent's naming prefers,
+ * not the order the index lists callees in: an interface method calls every
+ * implementation, so prometheus's `Queryable.Querier` reaches `NewMergeQuerier`
+ * through `fanout.Querier` and the TSDB's `DB.Querier` alike, and the route
+ * through the named `fanout.Querier` beats the other. Every node at one depth is
+ * expanded before any node at the next, so a route beaten at its own depth is
+ * dropped before anything is reached through it. Ending on fewer unnamed hops
+ * is no worse, so no route spends bridge budget a later hop needs.
+ *
+ * Returns the parent map keyed by route, so a caller can reconstruct the path
+ * of any route that reached a named symbol (`reached`).
  */
 function walkCalls(
-  cg: CodeGraph,
+  calleesOf: CalleesOf,
   seed: Node,
   named: ReadonlySet<string>,
   maxHops: number,
   maxBridge: number
-): { parent: Map<string, { prev: string | null; edge: Edge | null; node: Node }>; reached: string[] } {
-  const parent = new Map<string, { prev: string | null; edge: Edge | null; node: Node }>();
-  parent.set(seed.id, { prev: null, edge: null, node: seed });
-  const queue: Array<{ id: string; depth: number; streak: number }> = [
-    { id: seed.id, depth: 0, streak: 0 },
-  ];
+): { parent: Map<string, WalkStep>; reached: string[] } {
+  const parent = new Map<string, WalkStep>();
+  /** The routes each reached node keeps, by key; its size is the nodes reached. */
+  const routes = new Map<string, string[]>();
+  const beaten = new Set<string>();
+  const queue: string[] = [];
+  /** Where each route waits in the queue. */
+  const slot = new Map<string, number>();
+  const beats = (a: WalkStep, b: WalkStep) => a.depth <= b.depth && a.named >= b.named && a.streak <= b.streak;
+  const keep = (step: WalkStep): void => {
+    const kept = routes.get(step.node.id) ?? [];
+    if (kept.some((other) => beats(parent.get(other)!, step))) return;
+    const key = String(parent.size);
+    parent.set(key, step);
+    // A route beaten here is one of this depth, still waiting in the queue: the
+    // better route takes its place there, so the walk visits nodes in the order
+    // it reached them, whichever route won.
+    let place = -1;
+    const live: string[] = [];
+    for (const other of kept) {
+      if (!beats(step, parent.get(other)!)) {
+        live.push(other);
+        continue;
+      }
+      beaten.add(other);
+      const at = slot.get(other)!;
+      if (place < 0 || at < place) place = at;
+    }
+    live.push(key);
+    routes.set(step.node.id, live);
+    if (place < 0) {
+      place = queue.length;
+      queue.push(key);
+    } else {
+      queue[place] = key;
+    }
+    slot.set(key, place);
+  };
+  keep({ prev: null, edge: null, node: seed, depth: 0, streak: 0, named: named.has(seed.id) ? 1 : 0 });
   const reached: string[] = [];
-  for (let head = 0; head < queue.length && parent.size < NAMED_VISIT_CAP; head++) {
-    const { id, depth, streak } = queue[head]!;
-    if (id !== seed.id && named.has(id)) reached.push(id);
-    if (depth >= maxHops - 1) continue;
-    for (const c of cg.getCallees(id)) {
-      if (!FLOW_EDGE_KINDS.has(c.edge.kind) || parent.has(c.node.id)) continue;
+  for (let head = 0; head < queue.length && routes.size < NAMED_VISIT_CAP; head++) {
+    const key = queue[head]!;
+    if (beaten.has(key)) continue;
+    const at = parent.get(key)!;
+    const id = at.node.id;
+    if (id !== seed.id && named.has(id)) reached.push(key);
+    if (at.depth >= maxHops - 1) continue;
+    for (const c of calleesOf(id)) {
+      if (!FLOW_EDGE_KINDS.has(c.edge.kind)) continue;
+      const isNamed = named.has(c.node.id);
       // A route node is a connector, not a symbol the reader would have named:
-      // crossing one costs no bridge budget.
-      const newStreak = named.has(c.node.id) ? 0 : c.node.kind === 'route' ? streak : streak + 1;
-      if (newStreak > maxBridge) continue;
-      parent.set(c.node.id, { prev: id, edge: c.edge, node: c.node });
-      queue.push({ id: c.node.id, depth: depth + 1, streak: newStreak });
+      // crossing one costs no bridge budget. Nor does the hop from a const to the
+      // function it holds: to a reader, `extname` and the `extname` it hands on
+      // are one symbol, and the const has already spent the budget.
+      const free = c.node.kind === 'route' || (c.edge.metadata as { synthesizedBy?: unknown } | undefined)?.synthesizedBy === 'const-alias';
+      const streak = isNamed ? 0 : free ? at.streak : at.streak + 1;
+      if (streak > maxBridge) continue;
+      // A route never passes a node twice: going round a cycle counts its named
+      // symbols again and would out-rank the flow it repeats.
+      if (onRoute(parent, key, c.node.id)) continue;
+      keep({ prev: key, edge: c.edge, node: c.node, depth: at.depth + 1, streak, named: at.named + (isNamed ? 1 : 0) });
     }
   }
   return { parent, reached };
@@ -593,7 +630,7 @@ function walkBidirectional(
 }
 
 function chainTo(
-  parent: Map<string, { prev: string | null; edge: Edge | null; node: Node }>,
+  parent: ReadonlyMap<string, { prev: string | null; edge: Edge | null; node: Node }>,
   target: string
 ): FlowStep[] {
   const steps: FlowStep[] = [];
@@ -643,15 +680,28 @@ export function resolveNamedSymbolFlow(
         if (steps) found.push(steps);
       }
     } else {
-      for (const seed of [...flow.named.values()].slice(0, MAX_SEEDS)) {
-        const { parent, reached } = walkCalls(cg, seed, namedIds, maxHops, maxBridge);
-        // Explore's rule: the DEEPEST named sink this seed can reach.
-        let deepest: FlowStep[] | null = null;
-        for (const id of reached) {
-          const steps = chainTo(parent, id);
-          if (!deepest || steps.length > deepest.length) deepest = steps;
+      const callees = new Map<string, ReturnType<CodeGraph['getCallees']>>();
+      const calleesOf: CalleesOf = (id) => {
+        let out = callees.get(id);
+        if (!out) {
+          out = cg.getCallees(id);
+          callees.set(id, out);
         }
-        if (deepest) found.push(deepest);
+        return out;
+      };
+      for (const seed of [...flow.named.values()].slice(0, MAX_SEEDS)) {
+        const { parent, reached } = walkCalls(calleesOf, seed, namedIds, maxHops, maxBridge);
+        // Explore's rule: the DEEPEST named sink this seed can reach. Of two as
+        // deep, the one whose route passes more named symbols, as in the walk.
+        let deepest: string | null = null;
+        for (const key of reached) {
+          const at = parent.get(key)!;
+          const best = deepest === null ? null : parent.get(deepest)!;
+          if (!best || at.depth > best.depth || (at.depth === best.depth && at.named > best.named)) {
+            deepest = key;
+          }
+        }
+        if (deepest !== null) found.push(chainTo(parent, deepest));
       }
     }
 

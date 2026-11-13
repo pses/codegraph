@@ -68,6 +68,7 @@ describe('MCP repo-set scope (nav tools)', () => {
       ].join('\n'),
     );
 
+    fs.writeFileSync(path.join(dir, 'repo-b', 'SECRETLAYOUT.cpy'), '       01 SECRET-RECORD.\n          05 SECRET-FIELD PIC X(10).\n');
     cg = CodeGraph.initSync(dir);
     await cg.indexAll();
 
@@ -81,6 +82,16 @@ describe('MCP repo-set scope (nav tools)', () => {
   });
 
   const text = (r: ToolResult): string => r.content.map((c) => c.text).join('\n');
+
+  it('new upstream diagnostics and copybook lookups stay inside the repo scope', () => {
+    const view = createScopedCodeGraph(cg, ['repo-a']);
+    expect(cg.getExploreMissDiagnostics('onlyInB').candidates).toContain('onlyInB');
+    expect(view.getExploreMissDiagnostics('onlyInB').candidates).not.toContain('onlyInB');
+    expect(cg.getUnseenNames(['onlyInB'])).toEqual([]);
+    expect(view.getUnseenNames(['onlyInB'])).toEqual(['onlyInB']);
+    expect(cg.findNamedCopybooks('SECRETLAYOUT').length).toBeGreaterThan(0);
+    expect(view.findNamedCopybooks('SECRETLAYOUT')).toEqual([]);
+  });
 
   // ---- search --------------------------------------------------------------
 

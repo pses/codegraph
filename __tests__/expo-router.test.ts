@@ -560,7 +560,8 @@ describe('expo-router: end-to-end', () => {
     const detail = screens.screens.find((s) => s.path === '/object-detail')!;
     const tap = screens.links.find((l) => l.from === home.id && l.to === detail.id)!;
     expect(tap).toBeDefined();
-    expect(tap.via.map((v) => v.name)).toEqual(['ItemCard', 'openObjectDetail']);
+    // `handlePress` is a symbol of its own (#1669), so the tap passes through it.
+    expect(tap.via.map((v) => v.name)).toEqual(['ItemCard', 'handlePress', 'openObjectDetail']);
     expect(tap.when).toBe('props.collected');
     expect(tap.sites[0]!.href).toBe('/object-detail?detectionItem=${…}');
     // Navigation nothing on a screen reaches is an origin, not dropped: the
@@ -740,8 +741,10 @@ export default function ReviewScreen() {
 
     // One transition into /capture/review, and it comes from /capture.
     expect(links.map((l) => screens.screens.find((s) => s.id === l.from)?.path)).toEqual(['/capture']);
-    // Written right there: no chain, and no Swift guard smuggled in.
-    expect(links[0]!.via).toEqual([]);
+    // Written in this screen's own file, reached through the memo wrapper it
+    // renders, and no Swift guard smuggled in.
+    expect(links[0]!.via.map((v) => v.name)).toEqual(['MemoizedCaptureComponent', 'CaptureComponent']);
+    expect(links[0]!.via.every((v) => v.language !== 'swift')).toBe(true);
     expect(links[0]!.when).toBe('!isRetakeBatchActive');
     expect(links[0]!.sites[0]!.file).toBe('src/app/capture/index.tsx');
     // …and /capture/review is not left feeding only itself.

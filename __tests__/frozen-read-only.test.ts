@@ -36,10 +36,14 @@ describe('frozen index readers', () => {
       expect(() => reader.getDb().exec("DELETE FROM schema_versions")).toThrow(/readonly|read.only/i);
     } finally { reader.close(); }
   });
-  it('rejects incompatible schema rather than migrating from a reader', async () => {
+  it('keeps older schemas untouched, using upstream read compatibility instead of migrating', async () => {
     const dir = await fixture(); const dbPath = path.join(dir, '.codegraph', 'codegraph.db');
-    const writer = DatabaseConnection.open(dbPath); writer.getDb().exec(`DELETE FROM schema_versions WHERE version = ${CURRENT_SCHEMA_VERSION}`); writer.close();
-    expect(() => DatabaseConnection.open(dbPath, { readOnly: true })).toThrow(/schema.*re.?index/i);
+    const writer = DatabaseConnection.open(dbPath); writer.getDb().exec(`DELETE FROM schema_versions WHERE version = ${CURRENT_SCHEMA_VERSION}`); writer.getDb().exec(`INSERT INTO schema_versions(version, applied_at) VALUES (${CURRENT_SCHEMA_VERSION - 1}, 0)`); writer.close();
+    const reader = DatabaseConnection.open(dbPath, { readOnly: true });
+    try {
+      expect(reader.getDb().prepare('SELECT MAX(version) AS v FROM schema_versions').get()).toEqual({ v: CURRENT_SCHEMA_VERSION - 1 });
+      expect(() => reader.getDb().exec('DELETE FROM schema_versions')).toThrow(/readonly|read.only/i);
+    } finally { reader.close(); }
   });
   it('frozen daemon workers never repair the default or cross-project index', async () => {
     const root = await fixture(); const other = await fixture();
@@ -56,7 +60,7 @@ describe('frozen index readers', () => {
           const r=await h.execute('codegraph_search',{query:'missing',...(projectPath?{projectPath}:{})});
           if(r.isError) throw new Error(JSON.stringify(r));
         }
-      }finally{e.stop();}})().catch(e=>{console.error(e);process.exitCode=1});`;
+      }finally{await e.stop();}})().catch(e=>{console.error(e);process.exitCode=1});`;
     const child = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 15000, env: { ...process.env, CODEGRAPH_TELEMETRY: '0', CODEGRAPH_QUERY_POOL_SIZE: '1', CODEGRAPH_MCP_TOOLS: 'search' } });
     expect(child.status, child.stderr).toBe(0);
     for (const dir of [root, other]) {
@@ -64,6 +68,22 @@ describe('frozen index readers', () => {
       try { expect(reader.getDb().prepare("SELECT name FROM sqlite_master WHERE name='idx_nodes_name'").get()).toBeUndefined(); }
       finally { reader.close(); }
     }
+  });
+  it.each(['1', undefined])('frozen readers use direct mode without claiming a writer (NO_DAEMON=%s)', async noDaemon => {
+    const root = await fixture();
+    const script = `const fs=require('fs');const {MCPServer}=require(${JSON.stringify(path.resolve('dist/mcp/index.js'))});
+      const locks=require(${JSON.stringify(path.resolve('dist/mcp/writer-lock.js'))});
+      const exit=process.exit;process.exit=code=>{if(code)throw new Error('unexpected exit '+code)};
+      (async()=>{const root=${JSON.stringify(root)};const writer=locks.tryAcquireWriterLock(root,'direct');
+        if(writer.kind==='taken')throw new Error('fixture writer unavailable');
+        const server=new MCPServer(root);
+        server.runProxyWithLocalHandshake=async()=>{};
+        try{await server.start();if(server.mode!=='direct')throw new Error('frozen reader routed to shared daemon');if(server.writerLockRoot)throw new Error('frozen reader claimed writer slot');await server.stop();if(!fs.existsSync(writer.pidPath))throw new Error('reader removed writer lock');console.log('reader preserved writer');}
+        finally{locks.releaseWriterLock(root);}})().catch(e=>{console.error(e);process.exitCode=1});`;
+    const child = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 15000,
+      env: { ...process.env, CODEGRAPH_NO_DAEMON: noDaemon, CODEGRAPH_FROZEN: '1', CODEGRAPH_TELEMETRY: '0', CODEGRAPH_QUERY_POOL_SIZE: '0', CODEGRAPH_NO_UPDATE_CHECK: '1' } });
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.stdout).toContain('reader preserved writer');
   });
   it('retains eager resolver initialization for writers', async () => {
     const dir = await fixture(); const createResolver = vi.spyOn(resolution, 'createResolver');

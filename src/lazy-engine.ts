@@ -10,7 +10,7 @@
  * vitest's module transform can't service a lazy `require` of a `.ts` file (see
  * `loadCodeGraphForTests` in `mcp/tools.ts`), so the suite replaces this file
  * with `__tests__/lazy-engine-eager.ts`, which imports the same modules up
- * front: an alias in `vitest.config.mts`. `__tests__/lazy-read-startup.test.ts` runs
+ * front: an alias in `vitest.config.mts`. `__tests__/lazy-engine.test.ts` runs
  * this one, through the built CLI.
  */
 

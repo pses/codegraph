@@ -15,6 +15,13 @@ describe('opt-in private session reset', () => {
     const f = fixture(); f.session.getExploreSessionState().record({ projectRoot: '/project', query: 'secret-query', files: [], sourceBytes: 0, responseBytes: 12 });
     await f.call('uca/resetSession'); expect(f.session.getExploreSessionState().snapshot()).toEqual([]); expect(f.transport.sendResult).toHaveBeenCalledWith(1, { version: 1 });
   });
+  it('resets upstream per-client stale-index warning history for the next lease', async () => {
+    const f = fixture();
+    const warnings = () => (f.session as unknown as { indexVersionWarnings: { claim(root: string): boolean } }).indexVersionWarnings;
+    expect(warnings().claim('/project')).toBe(true); expect(warnings().claim('/project')).toBe(false);
+    await f.call('uca/resetSession');
+    expect(warnings().claim('/project')).toBe(true);
+  });
   it('has no endpoint without the explicit direct frozen opt-in', async () => {
     const f = fixture(false); await f.call('uca/resetSession'); expect(f.transport.sendError).toHaveBeenCalledWith(1, -32601, expect.any(String));
   });
