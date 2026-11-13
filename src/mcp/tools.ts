@@ -2398,7 +2398,9 @@ export class ToolHandler {
         'codegraph_search',
         'codegraph_node',
       ]);
-      if (stats.fileCount < TINY_REPO_FILE_THRESHOLD) {
+      // An explicit operator/host surface is a contract, not an adaptive default.
+      // In particular, UCA validates every requested schema before serving a lease.
+      if (!allow && stats.fileCount < TINY_REPO_FILE_THRESHOLD) {
         visible = visible.filter(t => TINY_REPO_CORE_TOOLS.has(t.name));
       }
 
