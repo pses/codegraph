@@ -24,15 +24,6 @@ export function repoOfFilePath(filePath: string | undefined): string | undefined
 }
 
 /**
- * Escape the SQL `LIKE` metacharacters (`\`, `%`, `_`) so a repo name is matched
- * literally under `ESCAPE '\'`. Repo names come from file paths — untrusted — so
- * a name containing `%`/`_` must not become a wildcard.
- */
-function escapeLike(s: string): string {
-  return s.replace(/[\\%_]/g, (c) => `\\${c}`);
-}
-
-/**
  * A repo-scope SQL predicate + its bound params, or `null` when `repos` is
  * empty/absent (the caller then applies no scope — the upstream default).
  *
@@ -52,8 +43,11 @@ export function buildRepoScopeClause(
   const clauses: string[] = [];
   const params: string[] = [];
   for (const repo of repos) {
-    clauses.push(`(${column} = ? OR ${column} LIKE ? ESCAPE '\\')`);
-    params.push(repo, `${escapeLike(repo)}/%`);
+    // BINARY range covers exactly the `<repo>/` prefix, uses the path index,
+    // and unlike LIKE never equates case-variant repo identities. '/' sorts
+    // immediately before '0', including for Unicode repository names.
+    clauses.push(`(${column} = ? COLLATE BINARY OR (${column} >= ? COLLATE BINARY AND ${column} < ? COLLATE BINARY))`);
+    params.push(repo, `${repo}/`, `${repo}0`);
   }
   return { sql: `(${clauses.join(' OR ')})`, params };
 }

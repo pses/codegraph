@@ -158,3 +158,33 @@ describe.skipIf(!HAS_SQLITE)('resolve over an already-extracted DB', () => {
     expect(sigA.some((s) => s.startsWith('calls|'))).toBe(true);
   }, 180_000);
 });
+
+
+describe('split pipeline upstream parameter-flow parity', () => {
+  it('runs parameter-flow after resolution, preserving full-index targets and metadata', async () => {
+    const files = {"reference.rb": "class Reference\n  def add_to(table)\n    table.column(:a)\n    table.index(:a)\n  end\nend\n", "tables.rb": "class TableDefinition\n  def references(name)\n    Reference.new.add_to(self)\n  end\n\n  def column(name)\n    name\n  end\n\n  def index(name)\n    name\n  end\nend\n\nclass OtherDefinition\n  def column(name)\n    name\n  end\n\n  def index(name)\n    name\n  end\nend\n", "guess.rb": "class Table\n  def column(name)\n    name\n  end\n\n  def index(name)\n    name\n  end\nend\n"};
+    const graphs: CodeGraph[] = [];
+    try {
+      for (const mode of ['split', 'full']) {
+        const dir = path.join(tempDir, mode); fs.mkdirSync(dir, { recursive: true });
+        for (const [file, source] of Object.entries(files)) fs.writeFileSync(path.join(dir, file), source);
+        const cg = await CodeGraph.init(dir); graphs.push(cg);
+        await cg.indexAll({ extractOnly: mode === 'split' });
+        if (mode === 'split') await cg.resolveExtracted();
+      }
+      const calls = (cg: CodeGraph) => {
+        const source = cg.getNodesByName('add_to').find(n => n.kind === 'method')!;
+        return cg.getOutgoingEdges(source.id).filter(e => e.kind === 'calls').map(e => ({
+          target: cg.getNode(e.target)!.qualifiedName, flow: e.metadata?.parameterFlow,
+        })).sort((a, b) => a.target.localeCompare(b.target));
+      };
+      expect(calls(graphs[0]!)).toEqual([
+        { target: 'TableDefinition::column', flow: 'table' },
+        { target: 'TableDefinition::index', flow: 'table' },
+      ]);
+      expect(calls(graphs[0]!)).toEqual(calls(graphs[1]!));
+      expect(edgeSignatures(graphs[0]!)).toEqual(edgeSignatures(graphs[1]!));
+      expect(unresolvedCount(graphs[0]!)).toBe(unresolvedCount(graphs[1]!));
+    } finally { graphs.forEach(cg => cg.close()); }
+  });
+});

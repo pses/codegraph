@@ -125,9 +125,9 @@ const API_FILES: Record<string, string> = {
     '',
     'module.exports = fastify;',
   ].join('\n'),
-  'src/foo-record.ts': [
-    'export class FooRecord {',
-    "  label: string = '';",
+  'src/foo-record.d.ts': [
+    'declare class FooRecord {',
+    '  label: string;',
     '}',
   ].join('\n'),
 };

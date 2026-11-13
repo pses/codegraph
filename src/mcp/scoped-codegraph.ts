@@ -31,7 +31,7 @@
  */
 
 import type CodeGraph from '../index';
-import type { Node, Edge, Subgraph, SearchOptions, SearchResult, FileRecord } from '../types';
+import type { Node, Edge, Subgraph, SearchOptions, SearchResult, FileRecord, ImpactOptions } from '../types';
 import { repoInScope } from '../db/repo-scope';
 
 /**
@@ -89,8 +89,19 @@ export function createScopedCodeGraph(inner: CodeGraph, repos: readonly string[]
       inner.getCallers(nodeId, maxDepth, repoList)) as never,
     getCallees: ((nodeId: string, maxDepth?: number) =>
       inner.getCallees(nodeId, maxDepth, repoList)) as never,
-    getImpactRadius: ((nodeId: string, maxDepth?: number) =>
-      inner.getImpactRadius(nodeId, maxDepth, repoList)) as never,
+    getImpactRadius: ((nodeId: string, maxDepth?: number, options?: ImpactOptions) =>
+      scopeSubgraph(inner.getImpactRadius(nodeId, maxDepth, { ...options, repos: repoList }))) as never,
+    getCallSites: ((nodeId: string, direction: 'callers' | 'callees') =>
+      nodeInScope(inner.getNode(nodeId))
+        ? inner.getCallSites(nodeId, direction).filter(row => nodeInScope(row.node))
+          .map(row => ({ ...row, edges: row.edges.filter(edgeInScope) })).filter(row => row.edges.length > 0)
+        : []) as never,
+    findNamedCopybooks: ((query: string) => inner.findNamedCopybooks(query, repoList)
+      .map(book => ({ ...book, files: filterNodes(book.files), includes: filterNodes(book.includes) }))
+      .filter(book => book.files.length > 0 || book.includes.length > 0)) as never,
+    getExploreMissDiagnostics: ((query: string) => inner.getExploreMissDiagnostics(query, repoList)) as never,
+    getUnseenNames: ((names: readonly string[]) => inner.getUnseenNames(names, repoList)) as never,
+    hasFilesUnder: ((dir: string) => inner.getFiles().some(file => pathInScope(file.path) && file.path.startsWith(dir.replace(/\/$/, '') + '/'))) as never,
 
     // In-memory scope for the remaining result-bearing surface.
     getNode: ((id: string): Node | null => {
