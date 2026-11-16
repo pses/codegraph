@@ -53,6 +53,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Speed up the first MCP request on large indexes by counting only indexed files when listing tools, instead of scanning full graph statistics. Tool availability and exploration guidance are unchanged.
+
 - Explicit `CODEGRAPH_MCP_TOOLS` selections now remain available on small projects instead of silently hiding requested navigation tools.
 
 - In TypeScript, an awaited call with type arguments like `await fetchApi<User>("/me")` or `await api.get<T>(url)` now links to the function it calls. Before, the call was dropped, so typed fetch wrappers looked like they had no callers. (#2586)
