@@ -2366,8 +2366,9 @@ export class ToolHandler {
     if (!this.cg) return withRequiredProjectPath(visible);
 
     try {
-      const stats = this.cg.getStats();
-      const budget = getExploreBudget(stats.fileCount);
+      // Listing schemas needs only project size, not full node/edge statistics.
+      const fileCount = this.cg.getFileCount();
+      const budget = getExploreBudget(fileCount);
 
       // Tiny-repo tool gating: on projects under TINY_REPO_FILE_THRESHOLD
       // files, only expose the core trio (search, node, explore) — one
@@ -2400,7 +2401,7 @@ export class ToolHandler {
       ]);
       // An explicit operator/host surface is a contract, not an adaptive default.
       // In particular, UCA validates every requested schema before serving a lease.
-      if (!allow && stats.fileCount < TINY_REPO_FILE_THRESHOLD) {
+      if (!allow && fileCount < TINY_REPO_FILE_THRESHOLD) {
         visible = visible.filter(t => TINY_REPO_CORE_TOOLS.has(t.name));
       }
 
@@ -2408,7 +2409,7 @@ export class ToolHandler {
         if (tool.name === 'codegraph_explore') {
           return {
             ...tool,
-            description: `${tool.description} Exploration guidance — advisory only, NOT a quota: ~${budget} focused calls usually cover this project (${stats.fileCount.toLocaleString()} files indexed), and extra calls are never rejected or rate-limited.`,
+            description: `${tool.description} Exploration guidance — advisory only, NOT a quota: ~${budget} focused calls usually cover this project (${fileCount.toLocaleString()} files indexed), and extra calls are never rejected or rate-limited.`,
           };
         }
         return tool;

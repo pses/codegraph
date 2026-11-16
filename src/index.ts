@@ -2381,6 +2381,11 @@ export class CodeGraph {
   // Graph Statistics
   // ===========================================================================
 
+  /** Indexed file count without the full graph statistics scan. */
+  getFileCount(): number {
+    return this.queries.getFileCount();
+  }
+
   /**
    * Get statistics about the knowledge graph
    */

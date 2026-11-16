@@ -5839,6 +5839,11 @@ export class QueryBuilder {
       .all() as Array<{ language: Language; files: number; parsed: number }>;
   }
 
+  /** File count for discovery guidance; never aggregate the nodes or edges tables. */
+  getFileCount(): number {
+    return (this.db.prepare('SELECT COUNT(*) AS count FROM files').get() as { count: number }).count;
+  }
+
   /**
    * Get graph statistics
    */
